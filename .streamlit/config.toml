@@ -1,0 +1,5 @@
+[server]
+# Per-file upload limit (MB)
+maxUploadSize = 2048     # 1 GB
+# Max WebSocket message size (MB) – affects large charts/dataframes/transfers
+maxMessageSize = 2048
