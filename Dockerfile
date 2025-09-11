@@ -20,4 +20,4 @@ EXPOSE 8501
 ENV PORT=8501
 
 # Start Streamlit
-CMD ["bash", "-lc", "streamlit run main_tsplotter.py --server.port ${PORT} --server.address 0.0.0.0"]
+CMD ["bash", "-lc", "streamlit run main.py --server.port ${PORT} --server.address 0.0.0.0"]

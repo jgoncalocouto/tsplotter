@@ -24,18 +24,26 @@ ROW_INDEX_OPTION = "(row number 0..N-1)"
 # Page config
 # ----------------------------------
 st.set_page_config(page_title="Time-Series Plot Helper", layout="wide")
-st.title("Time-Series Plot Helper")
-st.caption("Upload -> choose time mode -> parse -> Plotly plots with local controls & downloads.")
+# ── Hero ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<h1 style="display:flex;align-items:center;gap:.5rem;margin:0">
+  🕒 Time-Series Plot Helper
+</h1>
+<p style="color:#6b7280;margin:.25rem 0 0">
+  Upload a dataset, parse time (<em>absolute</em> or <em>relative</em>), filter rows, and explore via
+  multi-subplot line charts, histograms, and grouped scatters.
+</p>
+""", unsafe_allow_html=True)
 
-HELP = """
-**How to use**
-1) Upload CSV/TSV, Excel, Parquet, or JSON.
-2) Pick **time mode**: **Absolute** (calendar timestamps) or **Relative**:
-   - choose any column as index **or**
-   - use **(row number 0..N-1)** to index by row position.
-3) Open each plot's expander, adjust *that plot's* controls, and download from the plot's Download expander.
-"""
-st.info(HELP)
+with st.expander("Quick start", expanded=False):
+    st.markdown("""
+1) **Upload** CSV/TSV, Excel, Parquet, or JSON  
+2) Pick **Time mode**: Absolute (timestamps) or Relative (row/column index)  
+3) Apply **Filters** (date & numeric ranges)  
+4) Explore **Plots** and **Download** the data behind each figure
+""")
+
+
 
 # ----------------------------------
 # Cached readers / builders
@@ -219,7 +227,7 @@ if "raw_df" not in st.session_state:
 # ----------------------------------
 # Sidebar - Upload (cached)
 # ----------------------------------
-st.sidebar.header("1) Upload")
+st.sidebar.header("📥 1) Upload")
 up = st.sidebar.file_uploader(
     "Upload data file",
     type=["csv", "tsv", "xls", "xlsx", "parquet", "json"],
@@ -243,10 +251,11 @@ raw_df = st.session_state.raw_df
 if raw_df is None:
     st.stop()
 
+
 # ----------------------------------
 # Sidebar - Time mode & parsing
 # ----------------------------------
-st.sidebar.header("2) Time mode & parsing")
+st.sidebar.header("🕒 2) Time mode & parsing")
 time_mode = st.sidebar.selectbox("Time mode", options=["Absolute time", "Relative time"], index=0)
 
 abs_controls_active = (time_mode == "Absolute time")
@@ -345,12 +354,14 @@ except Exception as e:
 
 st.sidebar.success(f"Parsed {len(prepared_df):,} rows. Index: {prepared_df.index.name}")
 
+
 # ----------------------------------
 #  FILTERS 
 # ----------------------------------
 import datetime as _dt
 
-with st.expander("Filters",expanded=True):
+with st.expander("🔎 Filters", expanded=True):
+    st.caption("Define one or more range conditions. Empty bounds mean −∞ / +∞. Time bounds respect your index timezone.")
 
     # Is our index a datetime (Absolute time mode)?
     _is_dt_index = isinstance(prepared_df.index, pd.DatetimeIndex)
@@ -492,7 +503,8 @@ with st.expander("Filters",expanded=True):
 # ----------------------------------
 # Overview
 # ----------------------------------
-st.header("Overview")
+st.header("📊 Overview")
+st.caption("Quick stats and a preview so you know what you’re plotting.")
 
 with st.container(border=True):
     
@@ -501,7 +513,6 @@ with st.container(border=True):
     
     with st.expander("Summary Statistics",expanded=True):
     
-        st.markdown("### Summary Statistics")
         ov_cols = st.multiselect(
             "Columns for summary",
             options=_overview_numeric,
@@ -531,7 +542,7 @@ with st.container(border=True):
 # ----------------------------------
 # Plots
 # ----------------------------------
-st.header("Plots")
+st.header("📈 Plots")
 
 if px is None or go is None:
     st.error("Plotly is required. Install with: `pip install plotly`")
@@ -539,6 +550,7 @@ else:
 
     # ---------- LINE CHART (multi-subplots, synced X) ----------
     with st.expander("Line Chart (multi-subplots, synced X)", expanded=True):
+        st.caption("Stack up to 6 synced subplots. Great for related indicators on a shared time axis.")
         from plotly.subplots import make_subplots
     
         with st.expander("Line chart options", expanded=False):
@@ -665,6 +677,7 @@ else:
 
     # ---------- HISTOGRAM ----------
     with st.expander("Histogram (value distribution of selected columns)", expanded=True):
+        st.caption("Visualize value distributions. Binning supports Auto (FD/Scott/Sturges), Fixed width, or Target bins.")
         with st.expander("Histogram options", expanded=False):
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
             default_hist = numeric_cols[:1] if numeric_cols else []
@@ -789,6 +802,7 @@ else:
 
     # ---------- SCATTER (grouped optional) ----------
     with st.expander("Scatter (grouped optional)", expanded=True):
+        st.caption("Explore relationships between variables. Optional grouping switches between discrete palette or colorbar.")
         with st.expander("Scatter options", expanded=False):
             all_cols = list(work.columns)
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
@@ -899,6 +913,7 @@ else:
                 
     # ---------- SCATTER (color by g1, marker by g2; two-part legend) ----------
     with st.expander("Scatter (g1 → color, g2 → marker)", expanded=True):
+        st.caption("Two independent encodings: colors = g1 categories, markers = g2 categories. Legend shows both mappings.")
         from collections import Counter
     
         with st.expander("Scatter (g1/g2) options", expanded=False):
