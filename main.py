@@ -94,6 +94,56 @@ def _read_table_from_bytes(name: str, data: bytes, sheet: Optional[str]) -> pd.D
 
     raise ValueError("Unsupported file type. Use CSV, Excel, Parquet, or JSON.")
 
+def add_buy_me_coffee(url: str):
+    html = f"""
+    <style>
+      /* Give the page some bottom padding so the button doesn't overlap content */
+      .block-container {{ padding-bottom: 160px; }}
+
+      /* Floating circular button */
+      #fixed-coffee {{
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 9999;
+      }}
+      #fixed-coffee a {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 72px;
+        height: 72px;
+        border-radius: 999px;
+        background: #ff813f;
+        color: #ffffff !important;
+        text-decoration: none;
+        box-shadow: 0 8px 20px rgba(0,0,0,.25);
+        font-size: 36px;
+        line-height: 1;
+        transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+        opacity: 0.95;
+      }}
+      #fixed-coffee a:hover {{
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(0,0,0,.28);
+        opacity: 1;
+      }}
+
+      /* Smaller on mobile + move up so it clears Streamlit's bottom toolbar */
+      @media (max-width: 640px) {{
+        #fixed-coffee a {{ width: 56px; height: 56px; font-size: 28px; }}
+        #fixed-coffee {{ bottom: 88px; right: 16px; }}
+      }}
+    </style>
+
+    <div id="fixed-coffee">
+      <a href="{url}" target="_blank" rel="noopener noreferrer" title="Buy me a coffee" aria-label="Buy me a coffee">☕</a>
+    </div>
+    """
+    import streamlit as st
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _align_to_index_tz(ts, index_dtindex):
     """Return a pandas.Timestamp aligned to the index tz (or naive if index is naive)."""
     if ts is None:
@@ -1081,3 +1131,4 @@ else:
                     help="Exact data used to draw the scatter (after local downsampling)."
                 )
     
+    add_buy_me_coffee("https://paypal.me/jgoncalocouto/1")
