@@ -9,6 +9,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import streamlit as st
+import datetime as _dt
 
 # Plotly
 try:
@@ -408,145 +409,234 @@ st.sidebar.success(f"Parsed {len(prepared_df):,} rows. Index: {prepared_df.index
 # ----------------------------------
 #  FILTERS 
 # ----------------------------------
-import datetime as _dt
+st.header("Filters")
+_is_dt_index = isinstance(prepared_df.index, pd.DatetimeIndex)
+_TIME_VAR_OPTION = "(time index)"
 
-with st.expander("🔎 Filters", expanded=True):
-    st.caption("Define one or more range conditions. Empty bounds mean −∞ / +∞. Time bounds respect your index timezone.")
+# Detect columns by type
+_num_cols = prepared_df.select_dtypes(include=[np.number]).columns.tolist()
+_dt_cols = prepared_df.select_dtypes(include=["datetime", "datetimetz"]).columns.tolist()
+_cat_cols = prepared_df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
 
-    # Is our index a datetime (Absolute time mode)?
-    _is_dt_index = isinstance(prepared_df.index, pd.DatetimeIndex)
-    _TIME_VAR_OPTION = "(time index)"  # pseudo-variable for the datetime index
-    
-    # Default year for date pickers: max year in the index (fallback = current year)
-    if _is_dt_index and len(prepared_df.index) > 0:
-        _ts_max = prepared_df.index.max()
-        _default_year = int(pd.Timestamp(_ts_max).year)
+# Build variable list: (time index?) + datetime columns + numeric + categorical/bool
+_filter_vars = ([_TIME_VAR_OPTION] if _is_dt_index else []) + _dt_cols + _num_cols + _cat_cols
+
+# Default year for date pickers: latest from time index if present, else current year
+if _is_dt_index and len(prepared_df.index) > 0:
+    _default_year = int(pd.Timestamp(prepared_df.index.max()).year)
+else:
+    _default_year = _dt.date.today().year
+
+# ——— helpers ———
+def _align_to_tz(ts, tz):
+    """Align a bound to a given tz (or strip tz if tz is None)."""
+    if ts is None:
+        return None
+    ts = pd.Timestamp(ts)
+    if tz is not None:
+        return ts.tz_localize(tz) if ts.tzinfo is None else ts.tz_convert(tz)
     else:
-        import datetime as _dt
-        _default_year = _dt.date.today().year
+        return ts.tz_localize(None) if ts.tzinfo is not None else ts
 
-    # Variables you can filter: (time index if datetime) + numeric columns
-    _numeric_cols = prepared_df.select_dtypes(include=[np.number]).columns.tolist()
-    _filter_vars = ([_TIME_VAR_OPTION] if _is_dt_index else []) + _numeric_cols
-    
-    n_filters = st.number_input(
-        "Number of filtering conditions",
-        min_value=0, max_value=10, value=0, step=1, key="flt_n",
-        help="Each condition is of the form Lower ≤ value ≤ Upper. Leave a bound empty to mean -∞ / +∞."
-    )
-    
-    _conditions = []
-    for i in range(int(n_filters)):
-        with st.expander(f"Condition {i+1}", expanded=True):
-            # Logical operator vs previous condition (ignored for the first row)
-            logic_op = st.selectbox(
-                "Logical operator vs previous",
-                options=["AND", "OR"], index=0, key=f"flt_logic_{i}"
-            )
-    
-            var_i = st.selectbox(
-                "Variable",
-                options=_filter_vars,
-                index=0,
-                key=f"flt_var_{i}"
-            )
-    
-            if var_i == _TIME_VAR_OPTION and _is_dt_index:
-                # Datetime bounds (optional)
-                use_low = st.checkbox("Set lower datetime bound (≥)", value=False, key=f"flt_use_lowdt_{i}")
-                if use_low:
-                    low_date = st.date_input(
-                        "Lower date",
-                        value=_dt.date(_default_year, 1, 1),   # ⟵ default = Jan 1 of latest year
-                        key=f"flt_low_date_{i}"
-                    )
-                    low_time = st.time_input("Lower time", value=_dt.time(0, 0), key=f"flt_low_time_{i}")
-                    low_val = _dt.datetime.combine(low_date, low_time)
-                else:
-                    low_val = None
-            
-                use_up = st.checkbox("Set upper datetime bound (≤)", value=False, key=f"flt_use_updt_{i}")
-                if use_up:
-                    up_date = st.date_input(
-                        "Upper date",
-                        value=_dt.date(_default_year, 12, 31),  # ⟵ default = Dec 31 of latest year
-                        key=f"flt_up_date_{i}"
-                    )
-                    up_time = st.time_input("Upper time", value=_dt.time(23, 59, 59), key=f"flt_up_time_{i}")
-                    up_val = _dt.datetime.combine(up_date, up_time)
-                else:
-                    up_val = None
-    
-                cond = {
-                    "logic": logic_op,
-                    "is_time": True,
-                    "var": None,           # (index)
-                    "low": low_val,        # datetime or None
-                    "up": up_val,          # datetime or None
-                }
-    
+def _parse_csv_list(s: str):
+    vals = [v.strip() for v in s.split(",") if v.strip()]
+    return vals
+
+# UI
+n_filters = st.number_input(
+    "Number of filtering conditions",
+    min_value=0, max_value=10, value=0, step=1, key="flt2_n",
+    help="Each condition matches rows; you can chain with AND/OR. Empty numeric bounds mean −∞ / +∞."
+)
+
+_conditions = []
+for i in range(int(n_filters)):
+    with st.expander(f"Condition {i+1}", expanded=True):
+        logic_op = st.selectbox("Logical operator vs previous", ["AND", "OR"], index=0, key=f"flt2_logic_{i}")
+        var_i = st.selectbox("Variable", options=_filter_vars, index=0, key=f"flt2_var_{i}")
+
+        # Decide branch by variable type
+        if var_i == _TIME_VAR_OPTION:
+            # Datetime bounds for the index
+            use_low = st.checkbox("Set lower datetime bound (≥)", value=False, key=f"flt2_use_lowdt_idx_{i}")
+            if use_low:
+                low_date = st.date_input("Lower date", value=_dt.date(_default_year, 1, 1), key=f"flt2_low_date_idx_{i}")
+                low_time = st.time_input("Lower time", value=_dt.time(0, 0), key=f"flt2_low_time_idx_{i}")
+                low_val = _dt.datetime.combine(low_date, low_time)
             else:
-                # Numeric bounds: allow blanks -> -inf / +inf
-                low_txt = st.text_input("Lower bound (≥) — empty = -inf", key=f"flt_low_{i}")
-                up_txt  = st.text_input("Upper bound (≤) — empty = +inf", key=f"flt_up_{i}")
-    
-                def _parse_float_or_none(s):
-                    s = s.strip()
-                    if not s:
-                        return None
-                    try:
-                        return float(s)
-                    except Exception:
-                        return None  # treat unparsable as empty
-    
-                cond = {
-                    "logic": logic_op,
-                    "is_time": False,
-                    "var": var_i,
-                    "low": _parse_float_or_none(low_txt),
-                    "up":  _parse_float_or_none(up_txt),
-                }
-    
-            _conditions.append(cond)
-    
-    # Build mask from conditions
-    _mask = pd.Series(True, index=prepared_df.index)
-    _first = True
-    for cond in _conditions:
-        # Skip no-op ranges (both bounds None)
-        if cond["low"] is None and cond["up"] is None:
+                low_val = None
+
+            use_up = st.checkbox("Set upper datetime bound (≤)", value=False, key=f"flt2_use_updt_idx_{i}")
+            if use_up:
+                up_date = st.date_input("Upper date", value=_dt.date(_default_year, 12, 31), key=f"flt2_up_date_idx_{i}")
+                up_time = st.time_input("Upper time", value=_dt.time(23, 59, 59), key=f"flt2_up_time_idx_{i}")
+                up_val = _dt.datetime.combine(up_date, up_time)
+            else:
+                up_val = None
+
+            _conditions.append({"logic": logic_op, "kind": "dt_index", "low": low_val, "up": up_val})
+
+        elif var_i in _dt_cols:
+            # Datetime bounds for a datetime column
+            # Default year from this column if possible
+            col = prepared_df[var_i]
+            try:
+                _col_year = int(pd.to_datetime(col, errors="coerce").max().year)
+            except Exception:
+                _col_year = _default_year
+
+            use_low = st.checkbox("Set lower datetime bound (≥)", value=False, key=f"flt2_use_lowdt_col_{i}")
+            if use_low:
+                low_date = st.date_input("Lower date", value=_dt.date(_col_year, 1, 1), key=f"flt2_low_date_col_{i}")
+                low_time = st.time_input("Lower time", value=_dt.time(0, 0), key=f"flt2_low_time_col_{i}")
+                low_val = _dt.datetime.combine(low_date, low_time)
+            else:
+                low_val = None
+
+            use_up = st.checkbox("Set upper datetime bound (≤)", value=False, key=f"flt2_use_updt_col_{i}")
+            if use_up:
+                up_date = st.date_input("Upper date", value=_dt.date(_col_year, 12, 31), key=f"flt2_up_date_col_{i}")
+                up_time = st.time_input("Upper time", value=_dt.time(23, 59, 59), key=f"flt2_up_time_col_{i}")
+                up_val = _dt.datetime.combine(up_date, up_time)
+            else:
+                up_val = None
+
+            _conditions.append({"logic": logic_op, "kind": "dt_col", "var": var_i, "low": low_val, "up": up_val})
+
+        elif var_i in _num_cols:
+            # Numeric range
+            low_txt = st.text_input("Lower bound (≥) — empty = -inf", key=f"flt2_low_num_{i}")
+            up_txt  = st.text_input("Upper bound (≤) — empty = +inf", key=f"flt2_up_num_{i}")
+
+            def _f_or_none(s):
+                s = s.strip()
+                if not s: return None
+                try: return float(s)
+                except Exception: return None
+
+            _conditions.append({"logic": logic_op, "kind": "num", "var": var_i, "low": _f_or_none(low_txt), "up": _f_or_none(up_txt)})
+
+        else:
+            # Categorical / text / bool
+            op = st.selectbox(
+                "Operator",
+                ["is one of", "is not one of", "contains", "not contains", "starts with", "ends with", "regex"],
+                index=0, key=f"flt2_op_cat_{i}"
+            )
+            case_sens = st.checkbox("Case sensitive", value=False, key=f"flt2_case_{i}")
+            na_match = st.checkbox("Treat NA as match", value=False, key=f"flt2_na_{i}")
+
+            # If low-cardinality, show multiselect; else CSV text
+            ser_str = prepared_df[var_i].astype(str)
+            uniq = pd.unique(ser_str.dropna())[:2000]  # cap
+            if op in ["is one of", "is not one of"] and len(uniq) <= 100:
+                vals = st.multiselect("Values", options=sorted(map(str, uniq)), key=f"flt2_vals_{i}")
+            elif op in ["is one of", "is not one of"]:
+                csv = st.text_input("Comma-separated values", key=f"flt2_vals_csv_{i}")
+                vals = _parse_csv_list(csv)
+            else:
+                patt = st.text_input("Pattern / text", key=f"flt2_patt_{i}")
+                vals = [patt]
+
+            _conditions.append({
+                "logic": logic_op, "kind": "cat", "var": var_i,
+                "op": op, "vals": vals, "case": case_sens, "na_match": na_match
+            })
+
+# Build mask
+_mask = pd.Series(True, index=prepared_df.index)
+_first = True
+
+for cond in _conditions:
+    # skip empty/no-op
+    if cond["kind"] in ("dt_index", "dt_col"):
+        if cond.get("low") is None and cond.get("up") is None:
             continue
-    
-        if cond["is_time"] and isinstance(prepared_df.index, pd.DatetimeIndex):
-            series = prepared_df.index
-            # Align bounds to the index tz (or make naive if index is naive)
-            low = _align_to_index_tz(cond["low"], series)
-            up  = _align_to_index_tz(cond["up"], series)
-        else:
-            series = prepared_df[cond["var"]]
-            if not pd.api.types.is_numeric_dtype(series):
-                series = pd.to_numeric(series, errors="coerce")
-            low = cond["low"]
-            up  = cond["up"]
-    
+    elif cond["kind"] == "num":
+        if cond.get("low") is None and cond.get("up") is None:
+            continue
+    elif cond["kind"] == "cat":
+        if cond.get("op") in ["is one of", "is not one of"] and not cond.get("vals"):
+            continue
+        if cond.get("op") in ["contains", "not contains", "starts with", "ends with", "regex"] and not cond.get("vals", [""])[0]:
+            continue
+
+    # per-kind masks
+    if cond["kind"] == "dt_index":
+        series = prepared_df.index
+        tz = series.tz
+        low = _align_to_tz(cond["low"], tz)
+        up  = _align_to_tz(cond["up"], tz)
         c_mask = pd.Series(True, index=prepared_df.index)
-        if low is not None:
-            c_mask &= (series >= low)
-        if up is not None:
-            c_mask &= (series <= up)
-    
-        if _first:
-            _mask = c_mask
-            _first = False
-        else:
-            _mask = (_mask & c_mask) if (cond["logic"] == "AND") else (_mask | c_mask)
-    
-    filtered_df = prepared_df.loc[_mask].copy()
-    _removed = len(prepared_df) - len(filtered_df)
-    st.caption(f"Filters applied. Rows kept: **{len(filtered_df):,}** (removed {max(_removed,0):,}).")
-    
-    # Use filtered data downstream
-    work = filtered_df.dropna(how="all").copy()
+        if low is not None: c_mask &= (series >= low)
+        if up  is not None: c_mask &= (series <= up)
+
+    elif cond["kind"] == "dt_col":
+        series = pd.to_datetime(prepared_df[cond["var"]], errors="coerce")
+        tz = getattr(series.dt, "tz", None)
+        low = _align_to_tz(cond["low"], tz)
+        up  = _align_to_tz(cond["up"], tz)
+        c_mask = pd.Series(True, index=prepared_df.index)
+        if low is not None: c_mask &= (series >= low)
+        if up  is not None: c_mask &= (series <= up)
+
+    elif cond["kind"] == "num":
+        series = prepared_df[cond["var"]]
+        if not pd.api.types.is_numeric_dtype(series):
+            series = pd.to_numeric(series, errors="coerce")
+        c_mask = pd.Series(True, index=prepared_df.index)
+        low, up = cond["low"], cond["up"]
+        if low is not None: c_mask &= (series >= low)
+        if up  is not None: c_mask &= (series <= up)
+
+    else:  # "cat"
+        series = prepared_df[cond["var"]].astype(str)
+        op = cond["op"]; vals = cond["vals"]; case = cond["case"]; na_match = cond["na_match"]
+        c_mask = pd.Series(False, index=prepared_df.index)
+
+        if op in ["is one of", "is not one of"]:
+            base = series.isin(vals)
+            c_mask = base.fillna(na_match)
+            if op == "is not one of":
+                c_mask = ~c_mask
+
+        elif op in ["contains", "not contains"]:
+            patt = vals[0]
+            if not case:
+                series_cmp = series.str.lower()
+                patt = patt.lower()
+            else:
+                series_cmp = series
+            base = series_cmp.str.contains(patt, regex=False, na=na_match)
+            c_mask = base if op == "contains" else ~base
+
+        elif op in ["starts with", "ends with"]:
+            patt = vals[0]
+            if not case:
+                series_cmp = series.str.lower(); patt = patt.lower()
+            else:
+                series_cmp = series
+            base = series_cmp.str.startswith(patt, na=na_match) if op == "starts with" else series_cmp.str.endswith(patt, na=na_match)
+            c_mask = base
+
+        else:  # regex
+            patt = vals[0]
+            base = series.str.contains(patt, regex=True, case=case, na=na_match)
+            c_mask = base
+
+    # chain
+    if _first:
+        _mask = c_mask
+        _first = False
+    else:
+        _mask = (_mask & c_mask) if (cond["logic"] == "AND") else (_mask | c_mask)
+
+filtered_df = prepared_df.loc[_mask].copy()
+_removed = len(prepared_df) - len(filtered_df)
+st.caption(f"Filters applied. Rows kept: **{len(filtered_df):,}** (removed {max(_removed,0):,}).")
+
+# downstream data
+work = filtered_df.dropna(how="all").copy()
 
 
 
