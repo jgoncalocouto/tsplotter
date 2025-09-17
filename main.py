@@ -1220,5 +1220,424 @@ else:
                     mime="text/csv",
                     help="Exact data used to draw the scatter (after local downsampling)."
                 )
+  
+    # ---------- SCATTER + ROLLING WINDOW (past n rows: min / mean / max) ----------
+    with st.expander("Scatter + Rolling Window (min / mean / max)", expanded=True):
+        st.caption("Scatter the selected series vs the current index and overlay trailing rolling min/mean/max computed over the past n rows.")
+    
+        with st.expander("Rolling options", expanded=False):
+            numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
+            if not numeric_cols:
+                st.info("No numeric columns available.")
+            else:
+                y_default = numeric_cols[0]
+                y_col = st.selectbox(
+                    "Y variable (scatter target)",
+                    options=numeric_cols,
+                    index=numeric_cols.index(y_default),
+                    key="rw_y",
+                )
+    
+                # Trailing window settings (past n rows)
+                window = st.number_input(
+                    "Rolling window (past n rows)",
+                    min_value=2, max_value=200_000, value=50, step=1,
+                    help="Trailing window across past n rows.",
+                    key="rw_window",
+                )
+    
+                include_current = st.checkbox(
+                    "Include current row in window",
+                    value=True,
+                    help="ON: window includes current row + previous n−1 rows. OFF: strictly previous n rows (current excluded).",
+                    key="rw_include_current",
+                )
+    
+                require_full = st.checkbox(
+                    "Require full window (min_periods = window)",
+                    value=False, key="rw_full"
+                )
+                min_periods = int(window if require_full else 1)
+    
+                show_band = st.checkbox("Shade band between min and max", value=True, key="rw_band")
+                unified_hover = st.checkbox("Unified hover (x)", value=True, key="rw_unified")
+                show_spikes = st.checkbox("Show spike lines", value=True, key="rw_spikes")
+                range_slider = st.checkbox(
+                    "Show range slider (x-axis)",
+                    value=isinstance(work.index, pd.DatetimeIndex),
+                    key="rw_rangeslider",
+                )
+    
+                marker_size = st.slider("Scatter marker size", 3, 16, 7, key="rw_msize")
+                marker_opacity = st.slider("Scatter marker opacity", 0.2, 1.0, 0.7, 0.05, key="rw_mop")
+                max_points = st.slider("Max points (downsampling)", 1_000, 200_000, 50_000, 1_000, key="rw_maxpts")
+    
+        if numeric_cols:
+            # Series + trailing rolling stats (past n rows)
+            s = pd.to_numeric(work[y_col], errors="coerce")
+    
+            # Exclude current by shifting if requested
+            base = s if include_current else s.shift(1)
+    
+            roll = base.rolling(window=window, min_periods=min_periods)  # trailing (center=False)
+            s_min  = roll.min()
+            s_mean = roll.mean()
+            s_max  = roll.max()
+    
+            plot_df = pd.DataFrame(
+                {
+                    y_col: s,
+                    f"{y_col}__roll_min": s_min,
+                    f"{y_col}__roll_mean": s_mean,
+                    f"{y_col}__roll_max": s_max,
+                },
+                index=work.index,
+            ).dropna(how="all")
+    
+            # Downsample for plotting
+            plot_df_ds = _maybe_downsample_for_plot(plot_df, max_points=max_points)
+    
+            # X axis values/title
+            if isinstance(plot_df_ds.index, pd.DatetimeIndex):
+                x_vals = plot_df_ds.index
+                x_name = plot_df_ds.index.name or "time"
+            else:
+                x_vals = (
+                    plot_df_ds.index.astype(float)
+                    if pd.api.types.is_numeric_dtype(plot_df_ds.index)
+                    else plot_df_ds.index.astype(str)
+                )
+                x_name = plot_df_ds.index.name or "index"
+    
+            # Figure
+            fig = go.Figure()
+    
+            # 1) Scatter of raw values
+            fig.add_trace(
+                go.Scattergl(
+                    x=x_vals,
+                    y=plot_df_ds[y_col],
+                    mode="markers",
+                    name=y_col,
+                    marker=dict(size=marker_size, opacity=marker_opacity),
+                    hovertemplate="%{x}<br>%{y}<extra>"+y_col+"</extra>",
+                )
+            )
+    
+            # 2) Rolling lines (min / mean / max)
+            y_min  = plot_df_ds[f"{y_col}__roll_min"]
+            y_mean = plot_df_ds[f"{y_col}__roll_mean"]
+            y_max  = plot_df_ds[f"{y_col}__roll_max"]
+    
+            if show_band:
+                # add min first, then max with fill to show band
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=y_min,
+                        mode="lines",
+                        name="rolling min",
+                        line=dict(width=1),
+                        hovertemplate="%{x}<br>%{y}<extra>rolling min</extra>",
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=y_max,
+                        mode="lines",
+                        name="rolling max",
+                        line=dict(width=1),
+                        fill="tonexty",
+                        fillcolor="rgba(100,100,100,0.15)",
+                        hovertemplate="%{x}<br>%{y}<extra>rolling max</extra>",
+                    )
+                )
+            else:
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=y_min,
+                        mode="lines",
+                        name="rolling min",
+                        line=dict(width=1),
+                        hovertemplate="%{x}<br>%{y}<extra>rolling min</extra>",
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=y_max,
+                        mode="lines",
+                        name="rolling max",
+                        line=dict(width=1),
+                        hovertemplate="%{x}<br>%{y}<extra>rolling max</extra>",
+                    )
+                )
+    
+            # Mean on top
+            fig.add_trace(
+                go.Scatter(
+                    x=x_vals, y=y_mean,
+                    mode="lines",
+                    name="rolling mean",
+                    line=dict(width=2),
+                    hovertemplate="%{x}<br>%{y}<extra>rolling mean</extra>",
+                )
+            )
+    
+            # Layout
+            fig.update_layout(
+                margin=dict(l=40, r=20, t=10, b=40),
+                hovermode="x unified" if unified_hover else "closest",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                showlegend=True,
+            )
+            fig.update_xaxes(
+                rangeslider=dict(visible=range_slider),
+                showspikes=show_spikes,
+                spikemode="across",
+                spikesnap="cursor",
+                showline=True,
+                zeroline=False,
+                title=x_name,
+            )
+    
+            st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+    
+            # Download data exactly as plotted
+            with st.expander("Download (rolling scatter data)"):
+                out = plot_df_ds.reset_index().rename(columns={"index": x_name})
+                st.download_button(
+                    "Download CSV",
+                    data=out.to_csv(index=False).encode("utf-8"),
+                    file_name=f"rolling_scatter_{y_col}.csv",
+                    mime="text/csv",
+                    help="Includes raw values and rolling min/mean/max (after local downsampling).",
+                )
+                
+    # ---------- LINE + DERIVATIVES (value, 1st, 2nd) with trailing alignment ----------
+    with st.expander("Line + Derivatives (value, 1st, 2nd)", expanded=True):
+        from plotly.subplots import make_subplots
+    
+        # Define available numeric columns once (used outside options block too)
+        numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
+    
+        with st.expander("Derivative options", expanded=False):
+            if not numeric_cols:
+                st.info("No numeric columns available.")
+            else:
+                y_default = numeric_cols[0]
+                y_col = st.selectbox(
+                    "Series (Y)",
+                    options=numeric_cols,
+                    index=numeric_cols.index(y_default),
+                    key="der_y",
+                    help="Pick the series to analyze; derivatives are computed with respect to the current index."
+                )
+    
+                if isinstance(work.index, pd.DatetimeIndex):
+                    # Add "none (sample index)" so derivatives ignore time spacing
+                    t_unit = st.selectbox(
+                        "Time unit (for derivatives)",
+                        options=["seconds", "minutes", "hours", "days", "none (sample index)"],
+                        index=0,
+                        key="der_tunit"
+                    )
+                else:
+                    x_mode = st.selectbox(
+                        "X spacing (for derivatives)",
+                        options=["index step (1)", "use numeric index values"],
+                        index=0,
+                        key="der_xmode",
+                        help="If your index is numeric and meaningful, choose 'use numeric index values'."
+                    )
+    
+                show_markers   = st.checkbox("Show markers", value=True, key="der_markers")
+                line_width     = st.slider("Line width", 1, 8, 2, key="der_lw")
+                unified_hover  = st.checkbox("Unified hover (x)", value=True, key="der_unified")
+                range_slider   = st.checkbox("Show range slider (x-axis)",
+                                             value=isinstance(work.index, pd.DatetimeIndex), key="der_rangeslider")
+                show_spikes    = st.checkbox("Show spike lines", value=True, key="der_spikes")
+    
+                # Optional smoothing for derivatives only (preserves leading NaNs)
+                smooth_w = st.number_input(
+                    "Smooth derivatives (rolling mean window; 1 = off)",
+                    min_value=1, max_value=9999, value=1, step=1, key="der_smooth",
+                    help="Applies a rolling mean to dY/dX and d²Y/dX² for readability (original series unchanged)."
+                )
+    
+                max_points = st.slider(
+                    "Max points (downsampling)",
+                    1_000, 200_000, 50_000, 1_000, key="der_maxpts",
+                    help="For speed, the plotted data may be stride-downsampled."
+                )
+    
+        if numeric_cols:
+            # Base series (drop NA and sort)
+            df = work[[y_col]].dropna().copy()
+            try:
+                df = df.sort_index()
+            except Exception:
+                pass
+    
+            if len(df) < 3:
+                st.info("Need at least 3 points to compute a stable second derivative.")
+            else:
+                y = pd.to_numeric(df[y_col], errors="coerce").to_numpy(dtype="float64")
+    
+                # Build x in consistent units for derivatives
+                n = len(df)
+                if isinstance(df.index, pd.DatetimeIndex):
+                    if t_unit == "none (sample index)":
+                        # Uniform step by sample index
+                        x = np.arange(n, dtype="float64")
+                        x_label = "sample index (uniform)"
+                        der1_label = f"d/dn({y_col})"
+                        der2_label = f"d²/dn²({y_col})"
+                    else:
+                        # Time-based spacing
+                        t_sec = df.index.asi8.astype("float64") / 1e9  # ns -> seconds
+                        unit_div = {"seconds": 1.0, "minutes": 60.0, "hours": 3600.0, "days": 86400.0}[t_unit]
+                        x = t_sec / unit_div
+                        x_label = f"time ({t_unit})"
+                        der1_label = f"d/dt({y_col})"
+                        der2_label = f"d²/dt²({y_col})"
+                else:
+                    if x_mode == "use numeric index values" and pd.api.types.is_numeric_dtype(df.index):
+                        x = df.index.to_numpy(dtype="float64")
+                        x_label = df.index.name or "index"
+                        der1_label = f"d/dx({y_col})"
+                        der2_label = f"d²/dx²({y_col})"
+                    else:
+                        x = np.arange(n, dtype="float64")
+                        x_label = "sample index (uniform)"
+                        der1_label = f"d/dn({y_col})"
+                        der2_label = f"d²/dn²({y_col})"
+    
+                # Guard: degenerate/invalid x → fall back to unit steps
+                if (not np.isfinite(x).all()) or np.allclose(x.max(), x.min()):
+                    x = np.arange(n, dtype="float64")
+                    x_label = "sample index (uniform)"
+                    der1_label = f"d/dn({y_col})"
+                    der2_label = f"d²/dn²({y_col})"
+    
+                # Trailing derivatives with alignment:
+                # d1[t] = (y[t]-y[t-1]) / (x[t]-x[t-1])    for t>=1 ; d1[0]=NaN
+                # d2[t] = (d1[t]-d1[t-1]) / (x[t]-x[t-1])  for t>=2 ; d2[0:2]=NaN
+                d1 = np.full(n, np.nan)
+                d2 = np.full(n, np.nan)
+    
+                dy = np.diff(y)
+                dx = np.diff(x)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    d1_vals = np.where(dx != 0, dy / dx, np.nan)
+                d1[1:] = d1_vals
+    
+                num = d1[2:] - d1[1:-1]
+                ddx = dx[1:]
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    d2_vals = np.where(ddx != 0, num / ddx, np.nan)
+                d2[2:] = d2_vals
+    
+                # Optional smoothing (keep leading NaNs)
+                if int(smooth_w) > 1:
+                    w = int(smooth_w)
+                    d1_sm = pd.Series(d1).rolling(w, min_periods=1).mean().to_numpy()
+                    d2_sm = pd.Series(d2).rolling(w, min_periods=1).mean().to_numpy()
+                    d1_sm[:1] = np.nan
+                    d2_sm[:2] = np.nan
+                    d1, d2 = d1_sm, d2_sm
+    
+                # Assemble plotted dataframe
+                plot_df = pd.DataFrame(
+                    {
+                        y_col: y,
+                        der1_label: d1,
+                        der2_label: d2,
+                    },
+                    index=df.index,
+                )
+    
+                # Downsample for plotting (preserves NaNs)
+                plot_df_ds = _maybe_downsample_for_plot(plot_df, max_points=max_points)
+    
+                # X for plotting (original index)
+                if isinstance(plot_df_ds.index, pd.DatetimeIndex):
+                    x_vals = plot_df_ds.index
+                    x_name = plot_df_ds.index.name or "time"
+                else:
+                    x_vals = (
+                        plot_df_ds.index.astype(float)
+                        if pd.api.types.is_numeric_dtype(plot_df_ds.index)
+                        else plot_df_ds.index.astype(str)
+                    )
+                    x_name = plot_df_ds.index.name or "index"
+    
+                # Build 3 stacked subplots sharing X
+                fig = make_subplots(
+                    rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                    subplot_titles=[y_col, der1_label, der2_label]
+                )
+    
+                # Subplot 1: original series
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=plot_df_ds[y_col],
+                        mode="lines+markers" if show_markers else "lines",
+                        name=y_col, line=dict(width=line_width),
+                        hovertemplate="%{x}<br>%{y}<extra>"+y_col+"</extra>",
+                    ),
+                    row=1, col=1
+                )
+    
+                # Subplot 2: first derivative (NaN at first point; aligned at current t)
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=plot_df_ds[der1_label],
+                        mode="lines+markers" if show_markers else "lines",
+                        name=der1_label, line=dict(width=line_width),
+                        hovertemplate="%{x}<br>%{y}<extra>"+der1_label+"</extra>",
+                    ),
+                    row=2, col=1
+                )
+    
+                # Subplot 3: second derivative (NaN at first two points; aligned at current t)
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_vals, y=plot_df_ds[der2_label],
+                        mode="lines+markers" if show_markers else "lines",
+                        name=der2_label, line=dict(width=line_width),
+                        hovertemplate="%{x}<br>%{y}<extra>"+der2_label+"</extra>",
+                    ),
+                    row=3, col=1
+                )
+    
+                # Layout & axes
+                fig.update_layout(
+                    hovermode="x unified" if unified_hover else "closest",
+                    margin=dict(l=40, r=20, t=60, b=40),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    showlegend=True,
+                )
+                fig.update_xaxes(
+                    title=x_label if isinstance(work.index, pd.DatetimeIndex) else x_name,
+                    showspikes=show_spikes, spikemode="across", spikesnap="cursor",
+                    rangeslider=dict(visible=range_slider),
+                    row=3, col=1
+                )
+                for r in [1, 2, 3]:
+                    fig.update_yaxes(showline=True, zeroline=False, row=r, col=1)
+    
+                st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+    
+                # Download data exactly as plotted
+                with st.expander("Download (derivatives data)"):
+                    out = plot_df_ds.reset_index().rename(columns={"index": x_name})
+                    st.download_button(
+                        "Download CSV",
+                        data=out.to_csv(index=False).encode("utf-8"),
+                        file_name=f"derivatives_{y_col}.csv",
+                        mime="text/csv",
+                        help="Contains the series and its first/second derivatives (after local downsampling)."
+                    )
+    
+
     
     add_buy_me_coffee("https://paypal.me/jgoncalocouto/1")
