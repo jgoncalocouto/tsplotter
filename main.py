@@ -895,7 +895,14 @@ else:
                 if edges[-1] < vmax:
                     edges = np.append(edges, edges[-1] + width)
                     n_bins += 1
-                centers = (edges[:-1] + edges[1]) / 2.0
+                left_edges = edges[:-1]
+                right_edges = edges[1:]
+                bin_widths = right_edges - left_edges
+                centers = left_edges + bin_widths / 2.0
+                hover_labels = [
+                    f"[{l:.6g}, {r:.6g}{']' if i == len(left_edges) - 1 else ')'}"
+                    for i, (l, r) in enumerate(zip(left_edges, right_edges))
+                ]
 
                 hist_counts_dict = {}
                 fig_hist = go.Figure()
@@ -907,8 +914,10 @@ else:
                         go.Bar(
                             x=centers,
                             y=hist_counts,
+                            width=bin_widths,
                             name=str(c),
-                            hovertemplate="bin=%{x:.6g}<br>count=%{y}<extra>%{fullData.name}</extra>",
+                            text=hover_labels,
+                            hovertemplate="bin=%{text}<br>count=%{y}<extra>%{fullData.name}</extra>",
                         )
                     )
 
@@ -917,7 +926,7 @@ else:
                     margin=dict(l=40, r=20, t=10, b=40),
                     hovermode="x",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                    xaxis_title="Value (bin center)",
+                    xaxis_title="Value",
                     yaxis_title="Count",
                     showlegend=True,
                 )
@@ -927,8 +936,17 @@ else:
 
                 with st.expander("Download (histogram data)"):
                     meta_line = f"# mode={bin_mode}, width={width:.6g}, bins={n_bins}, range=[{vmin:.6g}, {vmax:.6g}]"
-                    hist_df = pd.DataFrame(hist_counts_dict, index=pd.Index(centers, name="bin_center"))
-                    csv_bytes = (meta_line + "\n" + hist_df.reset_index().to_csv(index=False)).encode("utf-8")
+                    hist_df = pd.DataFrame(
+                        {
+                            "bin_left": left_edges,
+                            "bin_right": right_edges,
+                            "bin_center": centers,
+                        }
+                    )
+                    for key, values in hist_counts_dict.items():
+                        hist_df[key] = values
+                    hist_df = hist_df[["bin_left", "bin_right", "bin_center", *hist_counts_dict.keys()]]
+                    csv_bytes = (meta_line + "\n" + hist_df.to_csv(index=False)).encode("utf-8")
                     st.download_button(
                         label="Download histogram (CSV)",
                         data=csv_bytes,
