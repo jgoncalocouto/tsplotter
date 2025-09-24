@@ -4,12 +4,16 @@
 from __future__ import annotations
 import io
 import json
-from typing import Optional
+import os
+import tempfile
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import datetime as _dt
+
+from matloader_v73 import read_mat_v73
 
 # Plotly
 try:
@@ -38,7 +42,7 @@ st.markdown("""
 
 with st.expander("Quick start", expanded=False):
     st.markdown("""
-1) **Upload** CSV/TSV, Excel, Parquet, or JSON  
+1) **Upload** CSV/TSV, Excel, Parquet, JSON, or MATLAB .mat (v7.3)
 2) Pick **Time mode**: Absolute (timestamps) or Relative (row/column index)  
 3) Apply **Filters** (date & numeric ranges)  
 4) Explore **Plots** and **Download** the data behind each figure
@@ -51,9 +55,29 @@ with st.expander("Quick start", expanded=False):
 # ----------------------------------
 
 @st.cache_data(show_spinner=False)
-def _read_table_from_bytes(name: str, data: bytes, sheet: Optional[str]) -> pd.DataFrame:
+def _read_table_from_bytes(
+    name: str, data: bytes, sheet: Optional[str]
+) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
     lname = name.lower()
     bio = io.BytesIO(data)
+
+    if lname.endswith(".mat"):
+        tmp = tempfile.NamedTemporaryFile(suffix=".mat", delete=False)
+        try:
+            tmp.write(data)
+            tmp.flush()
+        finally:
+            tmp.close()
+        try:
+            df, meta = read_mat_v73(tmp.name)
+            extra: Dict[str, Any] = {"format": "mat_v73", "source_name": name}
+            extra.update(meta)
+            return df, extra
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
     if lname.endswith((".csv", ".tsv")):
         # Multiple separators and encodings to be robust to Windows exports
@@ -64,10 +88,13 @@ def _read_table_from_bytes(name: str, data: bytes, sheet: Optional[str]) -> pd.D
             for enc in encs:
                 bio.seek(0)
                 try:
-                    return pd.read_csv(
-                        bio,
-                        sep=sep if lname.endswith(".csv") else ("\t" if sep == "\t" else sep),
-                        encoding=enc,
+                    return (
+                        pd.read_csv(
+                            bio,
+                            sep=sep if lname.endswith(".csv") else ("\t" if sep == "\t" else sep),
+                            encoding=enc,
+                        ),
+                        None,
                     )
                 except Exception as e:
                     last_err = e
@@ -75,25 +102,26 @@ def _read_table_from_bytes(name: str, data: bytes, sheet: Optional[str]) -> pd.D
 
     if lname.endswith(".parquet"):
         bio.seek(0)
-        return pd.read_parquet(bio)
+        return pd.read_parquet(bio), None
 
     if lname.endswith((".xls", ".xlsx")):
         bio.seek(0)
-        return pd.read_excel(bio, sheet_name=sheet) if sheet else pd.read_excel(bio)
+        df = pd.read_excel(bio, sheet_name=sheet) if sheet else pd.read_excel(bio)
+        return df, None
 
     if lname.endswith(".json"):
         bio.seek(0)
         try:
-            return pd.read_json(bio, lines=True)
+            return pd.read_json(bio, lines=True), None
         except Exception:
             bio.seek(0)
             obj = json.load(bio)
             try:
-                return pd.json_normalize(obj)
+                return pd.json_normalize(obj), None
             except Exception:
-                return pd.DataFrame(obj)
+                return pd.DataFrame(obj), None
 
-    raise ValueError("Unsupported file type. Use CSV, Excel, Parquet, or JSON.")
+    raise ValueError("Unsupported file type. Use CSV, Excel, Parquet, JSON, or MATLAB .mat (v7.3).")
 
 def add_buy_me_coffee(url: str):
     html = f"""
@@ -274,6 +302,8 @@ def _build_prepared_df(
 # ----------------------------------
 if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
+if "upload_meta" not in st.session_state:
+    st.session_state.upload_meta = None
 
 # ----------------------------------
 # Sidebar - Upload (cached)
@@ -281,7 +311,7 @@ if "raw_df" not in st.session_state:
 st.sidebar.header("📥 1) Upload")
 up = st.sidebar.file_uploader(
     "Upload data file",
-    type=["csv", "tsv", "xls", "xlsx", "parquet", "json"],
+    type=["csv", "tsv", "xls", "xlsx", "parquet", "json", "mat"],
     accept_multiple_files=False,
 )
 
@@ -293,14 +323,60 @@ if up:
     try:
         name = up.name
         data = up.getvalue()
-        df = _read_table_from_bytes(name, data, sheet)
+        df, meta = _read_table_from_bytes(name, data, sheet)
         st.session_state.raw_df = df
+        st.session_state.upload_meta = meta
     except Exception as e:
+        st.session_state.upload_meta = None
         st.sidebar.error(f"Read failed: {e}")
 
 raw_df = st.session_state.raw_df
+upload_meta = st.session_state.upload_meta
 if raw_df is None:
     st.stop()
+
+if upload_meta and upload_meta.get("format") == "mat_v73":
+    lines = []
+    source_name = upload_meta.get("source_name")
+    if source_name:
+        lines.append(f"File: `{source_name}`")
+    kind = upload_meta.get("kind")
+    if kind:
+        lines.append(f"Layout: `{kind}`")
+    n_cols = upload_meta.get("n_cols")
+    if n_cols is None:
+        n_cols = upload_meta.get("cols")
+    if n_cols is not None:
+        try:
+            n_cols_int = int(n_cols)
+        except Exception:
+            n_cols_int = n_cols
+        lines.append(f"Columns detected: **{n_cols_int}**")
+    time_ds = upload_meta.get("time_dataset")
+    if time_ds:
+        unit = upload_meta.get("time_unit")
+        if unit:
+            lines.append(f"Time vector: `{time_ds}` ({unit})")
+        else:
+            lines.append(f"Time vector: `{time_ds}`")
+    index_name = upload_meta.get("index_name")
+    if index_name:
+        lines.append(f"Index label: `{index_name}`")
+    h5path = upload_meta.get("h5path")
+    if h5path:
+        lines.append(f"Source group: `{h5path}`")
+    rows = upload_meta.get("rows")
+    if rows is not None:
+        try:
+            rows_int = int(rows)
+        except Exception:
+            rows_int = rows
+        lines.append(f"Rows detected: **{rows_int}**")
+
+    info_md = "**MAT v7.3 import**"
+    if lines:
+        info_md += "\n" + "\n".join(f"- {line}" for line in lines)
+    st.sidebar.info(info_md)
 
 
 # ----------------------------------
