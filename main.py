@@ -24,6 +24,7 @@ except Exception:
     go = None
 
 ROW_INDEX_OPTION = "(row number 0..N-1)"
+TIME_INDEX_OPTION = "(use existing time index)"
 
 # ----------------------------------
 # Page config
@@ -286,6 +287,19 @@ def _build_prepared_df(
 
     if not dt_col:
         raise ValueError("Absolute mode requires a datetime column.")
+    if dt_col == TIME_INDEX_OPTION:
+        tmp = raw_df.copy()
+        if not isinstance(tmp.index, (pd.DatetimeIndex, pd.TimedeltaIndex)):
+            tmp.index = pd.to_datetime(tmp.index, errors="coerce")
+        if hasattr(tmp.index, "notna"):
+            mask = tmp.index.notna()
+            tmp = tmp.loc[mask]
+        try:
+            tmp = tmp.sort_index()
+        except Exception:
+            pass
+        tmp.index.name = raw_df.index.name or "Time"
+        return _downcast_numeric(tmp)
     tmp = raw_df.copy()
     tmp[dt_col] = _parse_dt_series(tmp[dt_col], parse_profile or "Auto-detect", custom_fmt, tz_mode or "", assume_tz, out_tz)
     tmp = tmp.dropna(subset=[dt_col])
@@ -406,8 +420,16 @@ if rel_controls_active:
 
 if abs_controls_active:
     _guess = _guess_datetime_col(raw_df) or ""
-    _dt_opts = [""] + list(raw_df.columns)
-    _dt_idx = (1 + list(raw_df.columns).index(_guess)) if _guess in raw_df.columns else 0
+    _dt_opts = [""]
+    if isinstance(raw_df.index, (pd.DatetimeIndex, pd.TimedeltaIndex)):
+        _dt_opts.append(TIME_INDEX_OPTION)
+    _dt_opts.extend(list(raw_df.columns))
+    if _guess and _guess in raw_df.columns:
+        _dt_idx = _dt_opts.index(_guess)
+    elif TIME_INDEX_OPTION in _dt_opts:
+        _dt_idx = _dt_opts.index(TIME_INDEX_OPTION)
+    else:
+        _dt_idx = 0
 
     dt_col = st.sidebar.selectbox(
         "Datetime column",
