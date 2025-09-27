@@ -19,11 +19,15 @@ from matloader_v73 import read_mat_v73
 try:
     import plotly.express as px
     import plotly.graph_objects as go
-    from plotly.validators.scatter.marker import SymbolValidator
 except Exception:
     px = None
     go = None
     SymbolValidator = None
+else:
+    try:
+        from plotly.validators.scatter.marker import SymbolValidator
+    except Exception:
+        SymbolValidator = None
 
 ROW_INDEX_OPTION = "(row number 0..N-1)"
 TIME_INDEX_OPTION = "(use existing time index)"
