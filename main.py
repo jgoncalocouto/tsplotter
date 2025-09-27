@@ -22,6 +22,12 @@ try:
 except Exception:
     px = None
     go = None
+    SymbolValidator = None
+else:
+    try:
+        from plotly.validators.scatter.marker import SymbolValidator
+    except Exception:
+        SymbolValidator = None
 
 ROW_INDEX_OPTION = "(row number 0..N-1)"
 TIME_INDEX_OPTION = "(use existing time index)"
@@ -1199,16 +1205,111 @@ else:
                 "Light24": px.colors.qualitative.Light24,
             }
             disc_palette_name = st.selectbox("Discrete palette (for g1 colors)", options=list(DISC_PALETTES.keys()), index=0, key="sc2_palette")
-    
-            # Available marker symbols (cycle if needed)
-            SYMBOLS = ["circle", "square", "diamond", "cross", "x", "triangle-up",
-                       "triangle-down", "triangle-left", "triangle-right", "star",
-                       "hexagon", "pentagon"]
-    
+
+            MARKER_PRESETS = {
+                "Core Shapes": [
+                    "circle",
+                    "square",
+                    "diamond",
+                    "triangle-up",
+                    "triangle-down",
+                    "triangle-left",
+                    "triangle-right",
+                ],
+                "Crosshair Set": [
+                    "circle-open",
+                    "square-open",
+                    "diamond-open",
+                    "x",
+                    "cross",
+                    "triangle-up-open",
+                    "triangle-down-open",
+                ],
+                "Directional": [
+                    "triangle-up",
+                    "triangle-right",
+                    "triangle-down",
+                    "triangle-left",
+                    "arrow-up",
+                    "arrow-right",
+                    "arrow-down",
+                    "arrow-left",
+                ],
+                "Starburst": [
+                    "star",
+                    "hexagon",
+                    "pentagon",
+                    "bowtie",
+                    "hourglass",
+                    "circle-cross",
+                    "square-x",
+                ],
+                "Minimal Dots": [
+                    "circle",
+                    "circle-open",
+                    "circle-dot",
+                    "circle-open-dot",
+                    "circle-cross",
+                    "circle-open-cross",
+                ],
+            }
+            marker_preset_name = st.selectbox(
+                "Marker preset (for g2 symbols)",
+                options=list(MARKER_PRESETS.keys()),
+                index=0,
+                key="sc2_marker_preset",
+            )
+            custom_marker_input = st.text_input(
+                "Custom marker list (comma separated, overrides preset)",
+                value="",
+                placeholder="circle, square-open, diamond, x",
+                key="sc2_marker_custom",
+            )
+
             max_points_sc = st.slider("Max points (downsampling)", min_value=1_000, max_value=200_000, value=50_000, step=1_000, key="sc2_maxpts")
             marker_size = st.slider("Marker size", min_value=3, max_value=20, value=7, key="sc2_msize")
             marker_opacity = st.slider("Marker opacity", min_value=0.2, max_value=1.0, value=0.8, step=0.05, key="sc2_mop")
-    
+
+        # Resolve marker list (custom text overrides preset if valid)
+        marker_sequence = MARKER_PRESETS[marker_preset_name]
+        marker_sequence_label = f"'{marker_preset_name}' preset"
+        custom_marker_tokens: list[str] = []
+        invalid_marker_tokens: list[str] = []
+        if custom_marker_input:
+            custom_marker_tokens = [tok.strip() for tok in custom_marker_input.split(",") if tok.strip()]
+            if custom_marker_tokens:
+                validator = SymbolValidator() if SymbolValidator is not None else None
+                resolved_tokens: list[str] = []
+                for tok in custom_marker_tokens:
+                    if validator is None:
+                        resolved_tokens.append(tok)
+                        continue
+                    try:
+                        resolved_tokens.append(validator.validate_coerce(tok))
+                    except Exception:
+                        invalid_marker_tokens.append(tok)
+                if invalid_marker_tokens:
+                    skipped = ", ".join(sorted(set(invalid_marker_tokens)))
+                    st.warning(f"Unrecognized marker symbols skipped: {skipped}")
+                if resolved_tokens:
+                    marker_sequence = resolved_tokens
+                    marker_sequence_label = "custom marker list"
+                else:
+                    st.warning("No valid markers detected in the custom list. Reverting to the selected preset.")
+
+        palette = DISC_PALETTES[disc_palette_name]
+
+        summary_lines = [
+            f"- **X**: `{x_col}`",
+            f"- **Y**: `{y_col}`",
+            f"- **Color grouping (g1)**: `{g1_col}`" if g1_col != "(none)" else "- **Color grouping (g1)**: _disabled_",
+            f"- **Marker grouping (g2)**: `{g2_col}`" if g2_col != "(none)" else "- **Marker grouping (g2)**: _disabled_",
+            f"- **Color palette**: `{disc_palette_name}` ({len(palette)} colors)",
+            f"- **Marker source**: {marker_sequence_label} ({len(marker_sequence)} symbols)",
+            f"- **Markers**: `{', '.join(marker_sequence)}`" if marker_sequence else "- **Markers**: _none_",
+        ]
+        st.info("\n".join(summary_lines))
+
         # Build base DF
         needed = [x_col, y_col]
         if g1_col != "(none)":
@@ -1236,14 +1337,15 @@ else:
             g1_cats = list(plot_sc[g1_col].unique()) if g1_col != "(none)" else ["All"]
             g2_cats = list(plot_sc[g2_col].unique()) if g2_col != "(none)" else ["All"]
     
-            palette = DISC_PALETTES[disc_palette_name]
             if len(g1_cats) > len(palette):
                 st.warning(f"g1 has {len(g1_cats)} categories, but palette has {len(palette)} colors. Cycling colors.")
-            if len(g2_cats) > len(SYMBOLS):
-                st.warning(f"g2 has {len(g2_cats)} categories, but symbol set has {len(SYMBOLS)} symbols. Cycling symbols.")
-    
+            if len(g2_cats) > len(marker_sequence):
+                st.warning(
+                    f"g2 has {len(g2_cats)} categories, but the {marker_sequence_label} has {len(marker_sequence)} symbols. Cycling symbols."
+                )
+
             color_map = {cat: palette[i % len(palette)] for i, cat in enumerate(g1_cats)}
-            symbol_map = {cat: SYMBOLS[i % len(SYMBOLS)] for i, cat in enumerate(g2_cats)}
+            symbol_map = {cat: marker_sequence[i % len(marker_sequence)] for i, cat in enumerate(g2_cats)}
     
             # Build figure with actual data traces (no legend to avoid clutter)
             fig = go.Figure()
