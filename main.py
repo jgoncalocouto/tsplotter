@@ -583,10 +583,11 @@ if px is None or go is None:
 else:
 
     # ---------- LINE CHART (multi-subplots, synced X) ----------
-    with st.expander("Line Chart (multi-subplots, synced X)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Line Chart (multi-subplots, synced X)")
         st.caption("Stack up to 6 synced subplots. Great for related indicators on a shared time axis.")
         from plotly.subplots import make_subplots
-    
+
         with st.expander("Line chart options", expanded=False):
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
     
@@ -710,8 +711,10 @@ else:
 
 
     # ---------- HISTOGRAM ----------
-    with st.expander("Histogram (value distribution of selected columns)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Histogram (value distribution of selected columns)")
         st.caption("Visualize value distributions. Binning supports Auto (FD/Scott/Sturges), Fixed width, or Target bins.")
+
         with st.expander("Histogram options", expanded=False):
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
             default_hist = numeric_cols[:1] if numeric_cols else []
@@ -853,8 +856,10 @@ else:
             st.info("Pick columns in Histogram options to generate the histogram.")
 
     # ---------- SCATTER (grouped optional) ----------
-    with st.expander("Scatter (grouped optional)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Scatter (grouped optional)")
         st.caption("Explore relationships between variables. Optional grouping switches between discrete palette or colorbar.")
+
         with st.expander("Scatter options", expanded=False):
             all_cols = list(work.columns)
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
@@ -964,10 +969,11 @@ else:
                 )
                 
     # ---------- SCATTER (color by g1, marker by g2; two-part legend) ----------
-    with st.expander("Scatter (g1 → color, g2 → marker)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Scatter (g1 → color, g2 → marker)")
         st.caption("Two independent encodings: colors = g1 categories, markers = g2 categories. Legend shows both mappings.")
         from collections import Counter
-    
+
         with st.expander("Scatter (g1/g2) options", expanded=False):
             all_cols = list(work.columns)
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
@@ -1230,9 +1236,10 @@ else:
                 )
   
     # ---------- SCATTER + ROLLING WINDOW (past n rows: min / mean / max) ----------
-    with st.expander("Scatter + Rolling Window (min / mean / max)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Scatter + Rolling Window (min / mean / max)")
         st.caption("Scatter the selected series vs the current index and overlay trailing rolling min/mean/max computed over the past n rows.")
-    
+
         with st.expander("Rolling options", expanded=False):
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
             if not numeric_cols:
@@ -1421,12 +1428,14 @@ else:
                 )
                 
     # ---------- LINE + DERIVATIVES (value, 1st, 2nd) with trailing alignment ----------
-    with st.expander("Line + Derivatives (value, 1st, 2nd)", expanded=True):
+    with st.container(border=True):
+        st.subheader("Line + Derivatives (value, 1st, 2nd)")
+        st.caption("Compare a series with its first and second derivatives aligned to the current index.")
         from plotly.subplots import make_subplots
-    
+
         # Define available numeric columns once (used outside options block too)
         numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
-    
+
         with st.expander("Derivative options", expanded=False):
             if not numeric_cols:
                 st.info("No numeric columns available.")
