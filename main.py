@@ -6,17 +6,28 @@ import io
 import json
 import os
 import tempfile
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import datetime as _dt
 
-from filters.core import build_mask
+from filters.core import (
+    TIME_INDEX_OPTION as FILTER_TIME_INDEX_OPTION,
+    CategoricalCondition,
+    Condition,
+    DatetimeColumnCondition,
+    DatetimeIndexCondition,
+    NumericRangeCondition,
+    build_mask,
+    condition_from_dict,
+    condition_to_dict,
+)
 from filters.ui import render_filter_controls
 
 from matloader_v73 import read_mat_v73
+from scenario_state import apply_widget_state, collect_widget_state, json_safe_value
 
 # Plotly
 try:
@@ -34,6 +45,263 @@ else:
 
 ROW_INDEX_OPTION = "(row number 0..N-1)"
 TIME_INDEX_OPTION = "(use existing time index)"
+
+SCENARIO_VERSION = 1
+COMMON_TIMEZONES = [
+    "UTC",
+    "Europe/Lisbon",
+    "Europe/London",
+    "US/Eastern",
+    "US/Pacific",
+    "Asia/Tokyo",
+]
+
+PARSE_PROFILE_OPTIONS = [
+    "Auto-detect",
+    "DMY (dd/mm/yyyy)",
+    "MDY (mm/dd/yyyy)",
+    "YMD (yyyy-mm-dd)",
+    "Unix epoch (seconds)",
+    "Unix epoch (milliseconds)",
+    "Custom strptime",
+]
+
+TZ_MODE_OPTIONS = [
+    "Treat as naive (no tz)",
+    "Assume timezone and localize",
+    "Input already has timezone",
+]
+
+FILTER_KEY_PREFIX = "flt2"
+
+
+def _collect_widget_state_for_scenario() -> Dict[str, Any]:
+    return collect_widget_state(st.session_state)
+
+
+def _clear_filter_state(prefix: str, keep_count: int) -> None:
+    base = f"{prefix}_"
+    to_delete: List[str] = []
+    for key in list(st.session_state.keys()):
+        if not key.startswith(base):
+            continue
+        suffix = key[len(base) :]
+        try:
+            idx = int(suffix.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        if idx >= keep_count:
+            to_delete.append(key)
+    for key in to_delete:
+        del st.session_state[key]
+
+
+def _apply_filters_from_scenario(filters: List[Dict[str, Any]], df: pd.DataFrame) -> List[str]:
+    warnings: List[str] = []
+    valid_conditions: List[Condition] = []
+
+    for idx, data in enumerate(filters):
+        try:
+            cond = condition_from_dict(data)
+        except Exception as exc:
+            warnings.append(f"Filter {idx + 1} skipped — could not parse ({exc}).")
+            continue
+
+        if isinstance(cond, DatetimeColumnCondition) and cond.column not in df.columns:
+            warnings.append(
+                f"Filter {idx + 1} skipped — column '{cond.column}' not found."
+            )
+            continue
+        if isinstance(cond, NumericRangeCondition) and cond.column not in df.columns:
+            warnings.append(
+                f"Filter {idx + 1} skipped — column '{cond.column}' not found."
+            )
+            continue
+        if isinstance(cond, CategoricalCondition) and cond.column not in df.columns:
+            warnings.append(
+                f"Filter {idx + 1} skipped — column '{cond.column}' not found."
+            )
+            continue
+
+        valid_conditions.append(cond)
+
+    _clear_filter_state(FILTER_KEY_PREFIX, 0)
+    st.session_state[f"{FILTER_KEY_PREFIX}_n"] = len(valid_conditions)
+
+    for i, cond in enumerate(valid_conditions):
+        st.session_state[f"{FILTER_KEY_PREFIX}_logic_{i}"] = cond.logic if cond.logic in {"AND", "OR"} else "AND"
+
+        if isinstance(cond, DatetimeIndexCondition):
+            st.session_state[f"{FILTER_KEY_PREFIX}_var_{i}"] = FILTER_TIME_INDEX_OPTION
+
+            low = cond.low
+            st.session_state[f"{FILTER_KEY_PREFIX}_use_lowdt_idx_{i}"] = low is not None
+            if low is not None:
+                st.session_state[f"{FILTER_KEY_PREFIX}_low_date_idx_{i}"] = low.date()
+                st.session_state[f"{FILTER_KEY_PREFIX}_low_time_idx_{i}"] = low.timetz()
+            else:
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_low_date_idx_{i}", None)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_low_time_idx_{i}", None)
+
+            up = cond.up
+            st.session_state[f"{FILTER_KEY_PREFIX}_use_updt_idx_{i}"] = up is not None
+            if up is not None:
+                st.session_state[f"{FILTER_KEY_PREFIX}_up_date_idx_{i}"] = up.date()
+                st.session_state[f"{FILTER_KEY_PREFIX}_up_time_idx_{i}"] = up.timetz()
+            else:
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_up_date_idx_{i}", None)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_up_time_idx_{i}", None)
+
+        elif isinstance(cond, DatetimeColumnCondition):
+            st.session_state[f"{FILTER_KEY_PREFIX}_var_{i}"] = cond.column
+
+            low = cond.low
+            st.session_state[f"{FILTER_KEY_PREFIX}_use_lowdt_col_{i}"] = low is not None
+            if low is not None:
+                st.session_state[f"{FILTER_KEY_PREFIX}_low_date_col_{i}"] = low.date()
+                st.session_state[f"{FILTER_KEY_PREFIX}_low_time_col_{i}"] = low.timetz()
+            else:
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_low_date_col_{i}", None)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_low_time_col_{i}", None)
+
+            up = cond.up
+            st.session_state[f"{FILTER_KEY_PREFIX}_use_updt_col_{i}"] = up is not None
+            if up is not None:
+                st.session_state[f"{FILTER_KEY_PREFIX}_up_date_col_{i}"] = up.date()
+                st.session_state[f"{FILTER_KEY_PREFIX}_up_time_col_{i}"] = up.timetz()
+            else:
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_up_date_col_{i}", None)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_up_time_col_{i}", None)
+
+        elif isinstance(cond, NumericRangeCondition):
+            st.session_state[f"{FILTER_KEY_PREFIX}_var_{i}"] = cond.column
+            st.session_state[f"{FILTER_KEY_PREFIX}_low_num_{i}"] = "" if cond.low is None else str(cond.low)
+            st.session_state[f"{FILTER_KEY_PREFIX}_up_num_{i}"] = "" if cond.up is None else str(cond.up)
+
+        elif isinstance(cond, CategoricalCondition):
+            st.session_state[f"{FILTER_KEY_PREFIX}_var_{i}"] = cond.column
+            st.session_state[f"{FILTER_KEY_PREFIX}_op_{i}"] = cond.op
+            st.session_state[f"{FILTER_KEY_PREFIX}_case_{i}"] = bool(cond.case_sensitive)
+            st.session_state[f"{FILTER_KEY_PREFIX}_na_{i}"] = bool(cond.na_match)
+
+            values = [str(v) for v in cond.values]
+            if cond.op in {"is one of", "is not one of"}:
+                st.session_state[f"{FILTER_KEY_PREFIX}_vals_{i}"] = values
+                st.session_state[f"{FILTER_KEY_PREFIX}_vals_csv_{i}"] = ", ".join(values)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_patt_{i}", None)
+            else:
+                st.session_state[f"{FILTER_KEY_PREFIX}_patt_{i}"] = values[0] if values else ""
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_vals_{i}", None)
+                st.session_state.pop(f"{FILTER_KEY_PREFIX}_vals_csv_{i}", None)
+
+    return warnings
+
+
+def _apply_widget_state_from_scenario(widget_state: Dict[str, Any]) -> None:
+    apply_widget_state(widget_state, st.session_state)
+
+
+def _apply_scenario_to_session(scenario: Dict[str, Any], df: pd.DataFrame) -> List[str]:
+    warnings: List[str] = []
+
+    version = scenario.get("version", 1)
+    if version != SCENARIO_VERSION:
+        warnings.append(
+            f"Session file version {version} may be incompatible with app version {SCENARIO_VERSION}."
+        )
+
+    data_sig = scenario.get("data_signature", {})
+    if isinstance(data_sig, dict):
+        sig_columns = data_sig.get("columns")
+        if isinstance(sig_columns, list):
+            missing = [c for c in sig_columns if c not in df.columns]
+            if missing:
+                warnings.append(
+                    "Some columns referenced in the session are missing: " + ", ".join(missing)
+                )
+
+    time_cfg = scenario.get("time", {}) or {}
+    mode = time_cfg.get("mode")
+    if mode in {"Absolute time", "Relative time"}:
+        st.session_state["cfg_time_mode"] = mode
+    else:
+        warnings.append("Session omitted time mode; keeping current selection.")
+        mode = st.session_state.get("cfg_time_mode", "Absolute time")
+
+    if mode == "Relative time":
+        index_choice = time_cfg.get("index_col")
+        options = [ROW_INDEX_OPTION] + list(df.columns)
+        if index_choice in options:
+            st.session_state["cfg_index_col"] = index_choice
+        elif index_choice is not None:
+            warnings.append(f"Index column '{index_choice}' not available; using default.")
+    else:
+        dt_choice = time_cfg.get("dt_col", "") or ""
+        dt_options = [""]
+        if isinstance(df.index, (pd.DatetimeIndex, pd.TimedeltaIndex)):
+            dt_options.append(TIME_INDEX_OPTION)
+        dt_options.extend(list(df.columns))
+        if dt_choice in dt_options:
+            st.session_state["cfg_dt_col"] = dt_choice
+        elif dt_choice:
+            warnings.append(f"Datetime column '{dt_choice}' not available; using default.")
+
+        parse_profile = time_cfg.get("parse_profile")
+        if parse_profile in PARSE_PROFILE_OPTIONS:
+            st.session_state["cfg_parse_profile"] = parse_profile
+        elif parse_profile:
+            warnings.append(f"Parse profile '{parse_profile}' not recognised; using default.")
+
+        custom_fmt = time_cfg.get("custom_fmt") or ""
+        if parse_profile == "Custom strptime" and custom_fmt:
+            st.session_state["cfg_custom_fmt"] = custom_fmt
+        else:
+            st.session_state.pop("cfg_custom_fmt", None)
+
+        tz_mode = time_cfg.get("tz_mode")
+        if tz_mode in TZ_MODE_OPTIONS:
+            st.session_state["cfg_tz_mode"] = tz_mode
+        elif tz_mode:
+            warnings.append(f"Timezone mode '{tz_mode}' not recognised; using default.")
+            tz_mode = st.session_state.get("cfg_tz_mode", TZ_MODE_OPTIONS[0])
+        else:
+            tz_mode = st.session_state.get("cfg_tz_mode", TZ_MODE_OPTIONS[0])
+
+        if tz_mode == "Assume timezone and localize":
+            assume_val = time_cfg.get("assume_tz")
+            if assume_val in COMMON_TIMEZONES:
+                st.session_state["cfg_assume_tz_select"] = assume_val
+                st.session_state["cfg_assume_tz_custom"] = ""
+            elif assume_val:
+                st.session_state["cfg_assume_tz_select"] = "Custom..."
+                st.session_state["cfg_assume_tz_custom"] = assume_val
+            else:
+                st.session_state["cfg_assume_tz_select"] = COMMON_TIMEZONES[0]
+                st.session_state["cfg_assume_tz_custom"] = ""
+        else:
+            st.session_state.pop("cfg_assume_tz_select", None)
+            st.session_state.pop("cfg_assume_tz_custom", None)
+
+        out_val = time_cfg.get("out_tz")
+        if out_val in (None, "", "(keep)"):
+            st.session_state["cfg_out_tz_select"] = "(keep)"
+            st.session_state["cfg_out_tz_custom"] = ""
+        elif out_val in COMMON_TIMEZONES:
+            st.session_state["cfg_out_tz_select"] = out_val
+            st.session_state["cfg_out_tz_custom"] = ""
+        else:
+            st.session_state["cfg_out_tz_select"] = "Custom..."
+            st.session_state["cfg_out_tz_custom"] = out_val
+
+    filters_cfg = scenario.get("filters", [])
+    if isinstance(filters_cfg, list):
+        warnings.extend(_apply_filters_from_scenario(filters_cfg, df))
+
+    widget_cfg = scenario.get("widgets")
+    if isinstance(widget_cfg, dict):
+        _apply_widget_state_from_scenario(widget_cfg)
+
+    return warnings
 
 # ----------------------------------
 # Page config
@@ -329,6 +597,26 @@ if "upload_meta" not in st.session_state:
     st.session_state.upload_meta = None
 
 # ----------------------------------
+# Sidebar - Session presets
+# ----------------------------------
+session_box = st.sidebar.container()
+session_box.header("💾 Session presets")
+session_file = session_box.file_uploader(
+    "Load session JSON",
+    type=["json"],
+    key="session_json_loader",
+    help="Restore saved selector choices, filters, and chart options.",
+)
+apply_session_clicked = session_box.button(
+    "Apply loaded session",
+    use_container_width=True,
+    disabled=session_file is None,
+    key="apply_session_btn",
+)
+session_status_placeholder = session_box.empty()
+session_download_placeholder = session_box.empty()
+
+# ----------------------------------
 # Sidebar - Upload (cached)
 # ----------------------------------
 st.sidebar.header("📥 1) Upload")
@@ -355,6 +643,27 @@ if up:
 
 raw_df = st.session_state.raw_df
 upload_meta = st.session_state.upload_meta
+
+if apply_session_clicked:
+    if session_file is None:
+        session_status_placeholder.warning("Upload a session JSON file first.")
+    elif raw_df is None:
+        session_status_placeholder.warning("Upload data before applying a session file.")
+    else:
+        try:
+            payload = json.loads(session_file.getvalue().decode("utf-8"))
+        except Exception as exc:
+            session_status_placeholder.error(f"Failed to read session file: {exc}")
+        else:
+            warnings = _apply_scenario_to_session(payload, raw_df)
+            if warnings:
+                bullet_list = "\n".join(f"- {msg}" for msg in warnings)
+                session_status_placeholder.warning(
+                    "Session applied with warnings:\n" + bullet_list
+                )
+            else:
+                session_status_placeholder.success("Session applied.")
+
 if raw_df is None:
     st.stop()
 
@@ -406,7 +715,12 @@ if upload_meta and upload_meta.get("format") == "mat_v73":
 # Sidebar - Time mode & parsing
 # ----------------------------------
 st.sidebar.header("🕒 2) Time mode & parsing")
-time_mode = st.sidebar.selectbox("Time mode", options=["Absolute time", "Relative time"], index=0)
+time_mode = st.sidebar.selectbox(
+    "Time mode",
+    options=["Absolute time", "Relative time"],
+    index=0,
+    key="cfg_time_mode",
+)
 
 abs_controls_active = (time_mode == "Absolute time")
 rel_controls_active = (time_mode == "Relative time")
@@ -425,6 +739,7 @@ if rel_controls_active:
         "Index (x-axis) column",
         options=index_choices,
         help="Pick a column to be the x-axis, or choose row number 0..N-1.",
+        key="cfg_index_col",
     )
 
 if abs_controls_active:
@@ -445,46 +760,67 @@ if abs_controls_active:
         options=_dt_opts,
         index=_dt_idx,
         help="Column to interpret as time.",
+        key="cfg_dt_col",
     )
 
     parse_profile = st.sidebar.selectbox(
         "Input layout",
-        options=[
-            "Auto-detect",
-            "DMY (dd/mm/yyyy)",
-            "MDY (mm/dd/yyyy)",
-            "YMD (yyyy-mm-dd)",
-            "Unix epoch (seconds)",
-            "Unix epoch (milliseconds)",
-            "Custom strptime",
-        ],
+        options=PARSE_PROFILE_OPTIONS,
         index=0,
+        key="cfg_parse_profile",
     )
     if parse_profile == "Custom strptime":
-        custom_fmt = st.sidebar.text_input("strptime format", value="%Y-%m-%d %H:%M:%S") or None
+        custom_fmt = (
+            st.sidebar.text_input(
+                "strptime format",
+                value="%Y-%m-%d %H:%M:%S",
+                key="cfg_custom_fmt",
+            )
+            or None
+        )
 
     tz_mode = st.sidebar.selectbox(
         "Timezone handling",
-        options=[
-            "Treat as naive (no tz)",
-            "Assume timezone and localize",
-            "Input already has timezone",
-        ],
+        options=TZ_MODE_OPTIONS,
         index=0,
+        key="cfg_tz_mode",
     )
-    _common_tzs = ["UTC", "Europe/Lisbon", "Europe/London", "US/Eastern", "US/Pacific", "Asia/Tokyo"]
     if tz_mode == "Assume timezone and localize":
-        assume_tz = st.sidebar.selectbox("Assumed tz", options=_common_tzs + ["Custom..."], index=1)
-        if assume_tz == "Custom...":
-            assume_tz = st.sidebar.text_input("IANA tz (e.g., Europe/Paris)") or None
+        assume_choice = st.sidebar.selectbox(
+            "Assumed tz",
+            options=COMMON_TIMEZONES + ["Custom..."],
+            index=1,
+            key="cfg_assume_tz_select",
+        )
+        if assume_choice == "Custom...":
+            assume_tz = (
+                st.sidebar.text_input(
+                    "IANA tz (e.g., Europe/Paris)",
+                    key="cfg_assume_tz_custom",
+                )
+                or None
+            )
+        else:
+            assume_tz = assume_choice
 
-    out_tz = st.sidebar.selectbox(
+    out_choice = st.sidebar.selectbox(
         "Convert output to",
-        options=["(keep)"] + _common_tzs + ["Custom..."],
+        options=["(keep)"] + COMMON_TIMEZONES + ["Custom..."],
         index=1,
+        key="cfg_out_tz_select",
     )
-    if out_tz == "Custom...":
-        out_tz = st.sidebar.text_input("Target tz (IANA)") or None
+    if out_choice == "Custom...":
+        out_tz = (
+            st.sidebar.text_input(
+                "Target tz (IANA)",
+                key="cfg_out_tz_custom",
+            )
+            or None
+        )
+    elif out_choice == "(keep)":
+        out_tz = None
+    else:
+        out_tz = out_choice
 
 # Guard: Absolute time requires dt column
 if time_mode == "Absolute time" and not dt_col:
@@ -531,6 +867,41 @@ st.caption(f"Filters applied. Rows kept: **{len(filtered_df):,}** (removed {max(
 
 # downstream data
 work = filtered_df.dropna(how="all").copy()
+
+scenario_payload = {
+    "version": SCENARIO_VERSION,
+    "time": {
+        "mode": time_mode,
+        "index_col": index_col,
+        "dt_col": dt_col,
+        "parse_profile": parse_profile,
+        "custom_fmt": custom_fmt,
+        "tz_mode": tz_mode,
+        "assume_tz": assume_tz,
+        "out_tz": out_tz,
+    },
+    "filters": [condition_to_dict(cond) for cond in filter_conditions],
+    "widgets": _collect_widget_state_for_scenario(),
+    "data_signature": {
+        "columns": list(prepared_df.columns),
+        "index_name": prepared_df.index.name,
+    },
+}
+
+scenario_bytes = json.dumps(
+    scenario_payload,
+    indent=2,
+    sort_keys=True,
+    default=json_safe_value,
+).encode("utf-8")
+
+session_download_placeholder.download_button(
+    "Save session as JSON",
+    data=scenario_bytes,
+    file_name="tsplotter_session.json",
+    mime="application/json",
+    help="Download the current selector choices to restore later.",
+)
 
 
 

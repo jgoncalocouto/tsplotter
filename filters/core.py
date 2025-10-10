@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -192,3 +192,94 @@ def build_mask(df: pd.DataFrame, conditions: Iterable[Condition]) -> pd.Series:
                 mask = mask | cond_mask
 
     return mask
+
+
+def _dt_to_iso(value: Optional[dt.datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    return value.isoformat()
+
+
+def _iso_to_dt(value: Optional[str]) -> Optional[dt.datetime]:
+    if value in (None, ""):
+        return None
+    return pd.Timestamp(value).to_pydatetime()
+
+
+def condition_to_dict(cond: Condition) -> Dict[str, Any]:
+    """Serialize a condition dataclass into a JSON-friendly dict."""
+    if isinstance(cond, DatetimeIndexCondition):
+        return {
+            "type": "datetime_index",
+            "logic": cond.logic,
+            "low": _dt_to_iso(cond.low),
+            "up": _dt_to_iso(cond.up),
+        }
+    if isinstance(cond, DatetimeColumnCondition):
+        return {
+            "type": "datetime_column",
+            "logic": cond.logic,
+            "column": cond.column,
+            "low": _dt_to_iso(cond.low),
+            "up": _dt_to_iso(cond.up),
+        }
+    if isinstance(cond, NumericRangeCondition):
+        return {
+            "type": "numeric_range",
+            "logic": cond.logic,
+            "column": cond.column,
+            "low": float(cond.low) if cond.low is not None else None,
+            "up": float(cond.up) if cond.up is not None else None,
+        }
+    if isinstance(cond, CategoricalCondition):
+        return {
+            "type": "categorical",
+            "logic": cond.logic,
+            "column": cond.column,
+            "op": cond.op,
+            "values": list(cond.values),
+            "case_sensitive": bool(cond.case_sensitive),
+            "na_match": bool(cond.na_match),
+        }
+    raise TypeError(f"Unsupported condition type: {type(cond)!r}")
+
+
+def condition_from_dict(data: Dict[str, Any]) -> Condition:
+    """Deserialize a condition dictionary back into the appropriate dataclass."""
+    ctype = data.get("type")
+    logic = data.get("logic", "AND")
+
+    if ctype == "datetime_index":
+        return DatetimeIndexCondition(
+            logic=logic,
+            low=_iso_to_dt(data.get("low")),
+            up=_iso_to_dt(data.get("up")),
+        )
+    if ctype == "datetime_column":
+        return DatetimeColumnCondition(
+            logic=logic,
+            column=data["column"],
+            low=_iso_to_dt(data.get("low")),
+            up=_iso_to_dt(data.get("up")),
+        )
+    if ctype == "numeric_range":
+        low = data.get("low")
+        up = data.get("up")
+        return NumericRangeCondition(
+            logic=logic,
+            column=data["column"],
+            low=float(low) if low is not None else None,
+            up=float(up) if up is not None else None,
+        )
+    if ctype == "categorical":
+        return CategoricalCondition(
+            logic=logic,
+            column=data["column"],
+            op=data.get("op", "is one of"),
+            values=list(data.get("values", [])),
+            case_sensitive=bool(data.get("case_sensitive", False)),
+            na_match=bool(data.get("na_match", False)),
+        )
+    raise ValueError(f"Unknown condition type: {ctype!r}")
