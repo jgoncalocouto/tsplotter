@@ -13,7 +13,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
-# Copy your app code (ensure your main file is named main_tsplotter.py)
+# Copy the app and its local modules.
 COPY . /app
 
 EXPOSE 8501

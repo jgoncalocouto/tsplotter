@@ -1,7 +1,7 @@
 # Core
 streamlit>=1.36,<2.0
 pandas>=2.2,<3.0
-numpy>=1.23,<2.0
+numpy>=1.26,<3.0
 plotly>=5.20,<6.0
 
 # Optional readers used by the app
