@@ -26,6 +26,22 @@ Open the local URL printed by Streamlit. To use a different port, add `--server.
 
 The row metrics and preview reflect the active filters. Invalid timestamps are excluded with a warning. Chart-specific missing-value removal and sampling can reduce plotted rows; chart CSV exports match those plotted rows. Histogram exports contain bin counts. Chart selections survive switching views and reset when the dataset changes.
 
+### Bin scatter groups
+
+In **Grouped scatter**, select a numeric **Color by** or **Marker by** column, then choose its grouping mode:
+
+- **Individual values** keeps each distinct value as a group.
+- **Number of bins** splits the numeric range into the requested number of equal-width intervals.
+- **Bin width** creates intervals of the specified width, starting at the smallest selected value. The last interval can extend beyond the largest value.
+
+Color and marker settings are independent, including when both use the same column. Numeric color groups in the ordinary **Scatter** view also support binning; individual numeric values there retain the continuous color scale.
+
+New numeric selections in **Grouped scatter** start with five bins when there are more than 50 distinct values. You can switch back to **Individual values** or adjust the bins. Points use one shared drawing trace so combinations of color and marker bins do not create thousands of traces.
+
+Bins use complete, finite rows from the filtered dataset before chart downsampling. Intervals include the lower boundary and exclude the upper boundary, except the last interval includes both. Constant columns produce one group. **Grouping details** (or **Bin details** in Scatter) shows interval membership counts, including empty bins; chart legends show only bins with plotted points, ordered from low to high. There is a limit of 100 bins per grouping variable.
+
+The chart CSV preserves original values and adds separate color/marker bin-label columns. Binning never changes the X or Y values.
+
 ## Tests
 
 ```powershell
@@ -35,7 +51,7 @@ The row metrics and preview reflect the active filters. Invalid timestamps are e
 
 Tests cover the filter engine and Streamlit workflows, including chart navigation, input validation, dataset resets, and consistency between filtered previews and CSV exports.
 
-`main.py` coordinates loading and analysis, `workspace_ui.py` contains shared presentation helpers and the example dataset, and `filters/` separates filter controls from filtering logic.
+`main.py` coordinates loading and analysis, `workspace_ui.py` contains shared presentation helpers and the example dataset, `grouping.py` computes numeric intervals, `scatter_grouping.py` handles scatter grouping controls, and `filters/` separates filter controls from filtering logic.
 
 ## Docker
 

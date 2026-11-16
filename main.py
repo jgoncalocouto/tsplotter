@@ -18,6 +18,10 @@ import datetime as _dt
 from filters.core import build_mask
 from filters.ui import render_filter_controls
 from coffee_widget import add_buy_me_a_coffee
+from scatter_grouping import (
+    chart_export, complete_scatter_data, group_categories, prepare_group,
+    render_bin_details, render_group_controls,
+)
 
 from matloader_v73 import read_mat_v73
 from workspace_ui import (
@@ -277,7 +281,8 @@ def _build_prepared_df(
 # Data source and session lifecycle
 # ----------------------------------
 for _widget_key in list(st.session_state):
-    if _widget_key.startswith(("mlc_", "hist_", "sc_", "sc2_", "rw_", "der_")):
+    if (_widget_key.startswith(("mlc_", "hist_", "sc_", "sc2_", "rw_", "der_"))
+            and not _widget_key.endswith("_download")):
         st.session_state[_widget_key] = st.session_state[_widget_key]
 
 
@@ -796,6 +801,7 @@ else:
             with axis_right:
                 y_col = st.selectbox("Y variable", options=all_cols, index=y_idx, key="sc_y")
             group_col = st.selectbox("Group (optional)", options=["(none)"] + all_cols, index=0, key="sc_group")
+            color_settings = render_group_controls(work, group_col, encoding="color", key_prefix="sc_color", discrete=False)
 
             with st.expander("Color & display options", expanded=False):
                 CONT_CMAPS = {
@@ -830,67 +836,56 @@ else:
                 marker_size = st.slider("Marker size", min_value=3, max_value=20, value=7, key="sc_msize")
                 marker_opacity = st.slider("Marker opacity", min_value=0.2, max_value=1.0, value=0.8, step=0.05, key="sc_mop")
 
-            needed_cols = [c for c in [x_col, y_col, (None if group_col == "(none)" else group_col)] if c]
-            if not needed_cols:
-                st.info("Choose X and Y to draw the scatter.")
+            needed_cols = [x_col, y_col] + ([group_col] if group_col != "(none)" else [])
+            plot_sc = complete_scatter_data(work, needed_cols)
+            if plot_sc.empty:
+                st.info("No complete, finite rows are available for these axes and grouping. Choose different columns or adjust your filters.")
             else:
-                plot_sc = work[list(dict.fromkeys(needed_cols))].dropna().copy()
-                if len(plot_sc) > max_points_sc:
-                    stride = max(1, (len(plot_sc) + max_points_sc - 1) // max_points_sc)
-                    plot_sc = plot_sc.iloc[::stride]
-
-                color_arg = None if group_col == "(none)" else group_col
-
+                try:
+                    color_group = prepare_group(plot_sc, color_settings, discrete=False)
+                except ValueError as error:
+                    st.error(f"Color grouping: {error}")
+                    st.stop()
+                # Fit bins on all usable filtered rows, then sample only the plotted points.
+                plot_sc = _maybe_downsample_for_plot(plot_sc, max_points=max_points_sc)
+                color_arg = color_group.column if color_group else None
+                hover_columns = list(dict.fromkeys(needed_cols))
                 if color_arg is None:
+                    fig_sc = px.scatter(plot_sc, x=x_col, y=y_col, opacity=marker_opacity)
+                elif color_group.binning is None and pd.api.types.is_numeric_dtype(plot_sc[color_arg]) and not pd.api.types.is_bool_dtype(plot_sc[color_arg]):
                     fig_sc = px.scatter(
-                        plot_sc,
-                        x=x_col,
-                        y=y_col,
-                        opacity=marker_opacity,
+                        plot_sc, x=x_col, y=y_col, color=color_arg, hover_data=hover_columns,
+                        color_continuous_scale=CONT_CMAPS[cont_cmap_name], opacity=marker_opacity,
                     )
+                    fig_sc.update_layout(coloraxis_colorbar=dict(title=group_col))
                 else:
-                    is_numeric_group = pd.api.types.is_numeric_dtype(plot_sc[color_arg])
-                    if is_numeric_group:
-                        fig_sc = px.scatter(
-                            plot_sc,
-                            x=x_col,
-                            y=y_col,
-                            color=color_arg,
-                            color_continuous_scale=CONT_CMAPS[cont_cmap_name],
-                            opacity=marker_opacity,
-                        )
-                        fig_sc.update_layout(coloraxis_colorbar=dict(title=color_arg))
-                    else:
-                        fig_sc = px.scatter(
-                            plot_sc,
-                            x=x_col,
-                            y=y_col,
-                            color=color_arg,
-                            color_discrete_sequence=DISC_PALETTES[disc_palette_name],
-                            opacity=marker_opacity,
-                        )
-                        fig_sc.update_layout(
-                            legend=dict(orientation="v", y=0.5, yanchor="middle", x=1.02, xanchor="left")
-                        )
-
+                    categories = group_categories(plot_sc, color_group) if color_group.binning else None
+                    discrete_colors = {category: DISC_PALETTES[disc_palette_name][i % len(DISC_PALETTES[disc_palette_name])]
+                                       for i, category in enumerate(color_group.categories)} if color_group.binning else None
+                    fig_sc = px.scatter(
+                        plot_sc, x=x_col, y=y_col, color=color_arg, hover_data=hover_columns,
+                        category_orders={color_arg: categories} if categories else {},
+                        labels={color_arg: f"{group_col} (bins)" if color_group.binning else group_col},
+                        color_discrete_map=discrete_colors,
+                        color_discrete_sequence=DISC_PALETTES[disc_palette_name], opacity=marker_opacity,
+                    )
+                    fig_sc.update_layout(legend=dict(orientation="v", y=.5, yanchor="middle", x=1.02, xanchor="left"))
+                    if categories and len({discrete_colors[category] for category in categories}) < len(categories):
+                        st.warning("Some plotted bins share a palette color. Reduce the bin count or choose a larger palette to distinguish every group.")
                 fig_sc.update_traces(marker=dict(size=marker_size))
                 if color_arg is None:
                     fig_sc.update_traces(name=f"{y_col} vs {x_col}", showlegend=True)
-                    fig_sc.update_layout(legend=dict(orientation="v", y=0.5, yanchor="middle", x=1.02, xanchor="left"))
-
-                fig_sc.update_layout(
-                    margin=dict(l=40, r=20, t=10, b=40),
-                    showlegend=True,
-                )
+                fig_sc.update_layout(margin=dict(l=40, r=20, t=30, b=40), showlegend=True)
                 render_chart(fig_sc, len(plot_sc), len(work))
-
+                if color_group and color_group.binning:
+                    with st.expander("Bin details"):
+                        render_bin_details([color_group])
                 with st.expander("Download (scatter data)"):
                     st.download_button(
                         label="Download scatter data (CSV)",
-                        data=plot_sc.to_csv(index=False).encode("utf-8"),
-                        file_name="scatter_data.csv",
-                        mime="text/csv",
-                        help="Exact data used to draw the scatter (after local downsampling)."
+                        data=chart_export(plot_sc, [color_group]).to_csv(index=False).encode("utf-8"),
+                        file_name="scatter_data.csv", mime="text/csv", key="sc_download",
+                        help="Plotted rows with original values and any color-bin labels.",
                     )
 
     if plot_type == "Grouped scatter":
@@ -898,7 +893,6 @@ else:
         with st.container(border=True):
             st.subheader("Compare groups")
             st.caption("Use color and marker shapes to compare categories across two signals.")
-            from collections import Counter
 
             all_cols = list(work.columns)
             numeric_cols = work.select_dtypes(include=[np.number]).columns.tolist()
@@ -914,8 +908,10 @@ else:
                 y_col = st.selectbox("Y variable", options=all_cols, index=(all_cols.index(default_y) if default_y in all_cols else max(0, len(all_cols)-1)), key="sc2_y")
             with axis_left:
                 g1_col = st.selectbox("Color by", options=["(none)"] + all_cols, index=0, key="sc2_g1")
+                color_settings = render_group_controls(work, g1_col, encoding="color", key_prefix="sc2_color")
             with axis_right:
                 g2_col = st.selectbox("Marker by", options=["(none)"] + all_cols, index=0, key="sc2_g2")
+                marker_settings = render_group_controls(work, g2_col, encoding="marker", key_prefix="sc2_marker")
 
             with st.expander("Color, markers & performance", expanded=False):
                 # Discrete palettes (same set you used before)
@@ -1025,145 +1021,87 @@ else:
 
             palette = DISC_PALETTES[disc_palette_name]
 
-            summary_lines = [
-                f"- **X**: `{x_col}`",
-                f"- **Y**: `{y_col}`",
-                f"- **Color grouping (g1)**: `{g1_col}`" if g1_col != "(none)" else "- **Color grouping (g1)**: _disabled_",
-                f"- **Marker grouping (g2)**: `{g2_col}`" if g2_col != "(none)" else "- **Marker grouping (g2)**: _disabled_",
-                f"- **Color palette**: `{disc_palette_name}` ({len(palette)} colors)",
-                f"- **Marker source**: {marker_sequence_label} ({len(marker_sequence)} symbols)",
-                f"- **Markers**: `{', '.join(marker_sequence)}`" if marker_sequence else "- **Markers**: _none_",
-            ]
-            with st.expander("Grouping details"):
-                st.markdown("\n".join(summary_lines))
-
-            # Build base DF
-            needed = [x_col, y_col]
-            if g1_col != "(none)":
-                needed.append(g1_col)
-            if g2_col != "(none)":
-                needed.append(g2_col)
-
-            if not all(needed):
-                st.info("Choose X and Y (and optionally g1, g2) to draw the scatter.")
+            needed = [x_col, y_col] + [col for col in (g1_col, g2_col) if col != "(none)"]
+            plot_sc = complete_scatter_data(work, needed)
+            if plot_sc.empty:
+                st.info("No complete, finite rows are available for these axes and groups. Choose different columns or adjust your filters.")
             else:
-                plot_sc = work[list(dict.fromkeys(needed))].dropna().copy()
+                try:
+                    color_group = prepare_group(plot_sc, color_settings)
+                except ValueError as error:
+                    st.error(f"Color grouping: {error}")
+                    st.stop()
+                try:
+                    marker_group = prepare_group(plot_sc, marker_settings)
+                except ValueError as error:
+                    st.error(f"Marker grouping: {error}")
+                    st.stop()
 
-                # Treat group columns as categorical strings so we get a discrete legend
-                if g1_col != "(none)":
-                    plot_sc[g1_col] = plot_sc[g1_col].astype(str)
-                if g2_col != "(none)":
-                    plot_sc[g2_col] = plot_sc[g2_col].astype(str)
+                # Keep independent derived grouping columns so binning never replaces an axis.
+                plot_sc = _maybe_downsample_for_plot(plot_sc, max_points=max_points_sc)
+                g1_cats = group_categories(plot_sc, color_group)
+                g2_cats = group_categories(plot_sc, marker_group)
+                color_map = {cat: palette[i % len(palette)] for i, cat in enumerate(color_group.categories if color_group else ["All"])}
+                symbol_map = {cat: marker_sequence[i % len(marker_sequence)] for i, cat in enumerate(marker_group.categories if marker_group else ["All"])}
+                if len({color_map[category] for category in g1_cats}) < len(g1_cats):
+                    st.warning("Some color groups share a palette color. Choose fewer bins or a larger palette to distinguish every group.")
+                if len({symbol_map[category] for category in g2_cats}) < len(g2_cats):
+                    st.warning("Some marker groups share a symbol. Choose fewer bins or more symbols to distinguish every group.")
 
-                # Downsample
-                if len(plot_sc) > max_points_sc:
-                    stride = max(1, (len(plot_sc) + max_points_sc - 1) // max_points_sc)
-                    plot_sc = plot_sc.iloc[::stride]
-
-                # Prepare categories & mappings
-                g1_cats = list(plot_sc[g1_col].unique()) if g1_col != "(none)" else ["All"]
-                g2_cats = list(plot_sc[g2_col].unique()) if g2_col != "(none)" else ["All"]
-
-                if len(g1_cats) > len(palette):
-                    st.warning(f"g1 has {len(g1_cats)} categories, but palette has {len(palette)} colors. Cycling colors.")
-                if len(g2_cats) > len(marker_sequence):
-                    st.warning(
-                        f"g2 has {len(g2_cats)} categories, but the {marker_sequence_label} has {len(marker_sequence)} symbols. Cycling symbols."
-                    )
-
-                color_map = {cat: palette[i % len(palette)] for i, cat in enumerate(g1_cats)}
-                symbol_map = {cat: marker_sequence[i % len(marker_sequence)] for i, cat in enumerate(g2_cats)}
-
-                # Build figure with actual data traces (no legend to avoid clutter)
                 fig = go.Figure()
-
-                # Add one trace per (g1, g2) combination
-                if g1_col == "(none)" and g2_col == "(none)":
-                    # Simple scatter
-                    fig.add_trace(go.Scattergl(
-                        x=plot_sc[x_col], y=plot_sc[y_col],
-                        mode="markers",
-                        marker=dict(size=marker_size, opacity=marker_opacity),
-                        name="points",
-                        showlegend=False,
-                    ))
-                else:
-                    # Group and add traces
-                    if g1_col == "(none)":   # only g2 grouping
-                        for g2v, df_sub in plot_sc.groupby(g2_col):
-                            fig.add_trace(go.Scattergl(
-                                x=df_sub[x_col], y=df_sub[y_col],
-                                mode="markers",
-                                marker=dict(size=marker_size, opacity=marker_opacity, symbol=symbol_map[g2v]),
-                                name=f"{g2_col}={g2v}",
-                                showlegend=False,
-                            ))
-                    elif g2_col == "(none)":  # only g1 grouping
-                        for g1v, df_sub in plot_sc.groupby(g1_col):
-                            fig.add_trace(go.Scattergl(
-                                x=df_sub[x_col], y=df_sub[y_col],
-                                mode="markers",
-                                marker=dict(size=marker_size, opacity=marker_opacity, color=color_map[g1v]),
-                                name=f"{g1_col}={g1v}",
-                                showlegend=False,
-                            ))
-                    else:
-                        # both g1 & g2
-                        for (g1v, g2v), df_sub in plot_sc.groupby([g1_col, g2_col]):
-                            fig.add_trace(go.Scattergl(
-                                x=df_sub[x_col], y=df_sub[y_col],
-                                mode="markers",
-                                marker=dict(
-                                    size=marker_size,
-                                    opacity=marker_opacity,
-                                    color=color_map[g1v],
-                                    symbol=symbol_map[g2v],
-                                ),
-                                name=f"{g1_col}={g1v}, {g2_col}={g2v}",
-                                showlegend=False,  # keep legend clean; we'll add guides below
-                            ))
-
-                # --- Legend guides: Colors (g1) ---
-                if g1_col != "(none)":
-                    for i, g1v in enumerate(g1_cats):
+                active_groups = [group for group in (color_group, marker_group) if group]
+                hover_columns = list(dict.fromkeys(group.settings.source for group in active_groups))
+                marker = dict(size=marker_size, opacity=marker_opacity)
+                if color_group:
+                    marker["color"] = [color_map[value] for value in plot_sc[color_group.column]]
+                if marker_group:
+                    marker["symbol"] = [symbol_map[value] for value in plot_sc[marker_group.column]]
+                hover = "%{x}<br>%{y}"
+                for i, col in enumerate(hover_columns):
+                    hover += f"<br>{col}=%{{customdata[{i}]}}"
+                for group in active_groups:
+                    if group.binning:
+                        hover_columns.append(group.column)
+                        hover += f"<br>{group.settings.encoding.title()} bin=%{{customdata[{len(hover_columns) - 1}]}}"
+                # Per-point encodings avoid a trace for every color/marker combination.
+                fig.add_trace(go.Scattergl(
+                    x=plot_sc[x_col], y=plot_sc[y_col], mode="markers", marker=marker,
+                    name="points", showlegend=False,
+                    customdata=plot_sc[hover_columns].to_numpy() if hover_columns else None,
+                    hovertemplate=hover + "<extra></extra>",
+                ))
+                # Separate guides keep each encoding readable without listing every combination.
+                for group, categories, mapping in (
+                    (color_group, g1_cats, color_map), (marker_group, g2_cats, symbol_map),
+                ):
+                    if group is None:
+                        continue
+                    encoding = group.settings.encoding
+                    title = f"{encoding.title()}: {group.settings.source}" + (" (bins)" if group.binning else "")
+                    for i, category in enumerate(categories):
+                        legend_marker = dict(size=10)
+                        legend_marker["color" if encoding == "color" else "symbol"] = mapping[category]
                         fig.add_trace(go.Scatter(
-                            x=[None], y=[None],  # invisible point for legend only
-                            mode="markers",
-                            marker=dict(color=color_map[g1v], size=10),
-                            name=str(g1v),
-                            legendgroup=f"color_{g1_col}",
-                            legendgrouptitle_text=f"Color: {g1_col}" if i == 0 else None,
-                            showlegend=True,
+                            x=[None], y=[None], mode="markers", marker=legend_marker,
+                            name=str(category), legendgroup=f"{encoding}_{group.settings.source}",
+                            legendgrouptitle_text=title if i == 0 else None, showlegend=True,
                         ))
-
-                # --- Legend guides: Markers (g2) ---
-                if g2_col != "(none)":
-                    for i, g2v in enumerate(g2_cats):
-                        fig.add_trace(go.Scatter(
-                            x=[None], y=[None],
-                            mode="markers",
-                            marker=dict(symbol=symbol_map[g2v], size=10, line=dict(width=1)),
-                            name=str(g2v),
-                            legendgroup=f"marker_{g2_col}",
-                            legendgrouptitle_text=f"Marker: {g2_col}" if i == 0 else None,
-                            showlegend=True,
-                        ))
-
                 fig.update_layout(
-                    margin=dict(l=40, r=20, t=10, b=40),
-                    legend=dict(orientation="v", y=0.5, yanchor="middle", x=1.02, xanchor="left"),
-                    legend_tracegroupgap=10,  # visual gap between groups
+                    margin=dict(l=40, r=20, t=30, b=40), xaxis_title=x_col, yaxis_title=y_col,
+                    legend=dict(orientation="v", y=.5, yanchor="middle", x=1.02, xanchor="left"),
+                    legend_tracegroupgap=10,
                 )
-
                 render_chart(fig, len(plot_sc), len(work), height=480)
-
+                with st.expander("Grouping details"):
+                    st.markdown(f"**Color:** {g1_col} · {len(g1_cats)} groups  \n**Marker:** {g2_col} · {len(g2_cats)} groups")
+                    st.caption(f"Palette: {disc_palette_name} · Markers: {marker_sequence_label}")
+                    render_bin_details([color_group, marker_group])
                 with st.expander("Download (scatter g1/g2 data)"):
                     st.download_button(
                         label="Download scatter data (CSV)",
-                        data=plot_sc.to_csv(index=False).encode("utf-8"),
-                        file_name="scatter_g1_g2_data.csv",
-                        mime="text/csv",
-                        help="Exact data used to draw the scatter (after local downsampling)."
+                        data=chart_export(plot_sc, [color_group, marker_group]).to_csv(index=False).encode("utf-8"),
+                        file_name="scatter_g1_g2_data.csv", mime="text/csv", key="sc2_download",
+                        help="Plotted rows with original values and independent color/marker bin labels.",
                     )
 
     if plot_type == "Rolling window" and _overview_numeric:
