@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import re
-from typing import List
+from typing import Callable, List
 
 import pandas as pd
 import streamlit as st
@@ -96,6 +96,7 @@ def render_filter_controls(
     df: pd.DataFrame,
     key_prefix: str = "flt",
     allow_time_index: bool = True,
+    on_invalid: Callable[[], None] | None = None,
 ) -> List[Condition]:
     """Render filters; stop downstream charts until invalid conditions are fixed."""
     info = infer_filterable_columns(df, include_index=allow_time_index)
@@ -209,5 +210,7 @@ def render_filter_controls(
 
     if invalid:
         st.info("Fix the highlighted conditions or clear filters to continue.")
+        if on_invalid is not None:
+            on_invalid()
         st.stop()
     return conditions

@@ -18,6 +18,10 @@ import datetime as _dt
 from filters.core import build_mask
 from filters.ui import render_filter_controls
 from coffee_widget import add_buy_me_a_coffee
+from config_ui import (
+    apply_pending_time_settings, apply_pending_view_settings,
+    preserve_configuration_state, render_configuration_panel,
+)
 from scatter_grouping import (
     chart_export, complete_scatter_data, group_categories, prepare_group,
     render_bin_details, render_group_controls,
@@ -280,10 +284,12 @@ def _build_prepared_df(
 # ----------------------------------
 # Data source and session lifecycle
 # ----------------------------------
-for _widget_key in list(st.session_state):
-    if (_widget_key.startswith(("mlc_", "hist_", "sc_", "sc2_", "rw_", "der_"))
-            and not _widget_key.endswith("_download")):
-        st.session_state[_widget_key] = st.session_state[_widget_key]
+preserve_configuration_state()
+
+
+def _stop_with_configuration():
+    render_configuration_panel()
+    st.stop()
 
 
 def _set_dataset(df, meta, identity, label):
@@ -338,7 +344,9 @@ if raw_df is None:
     st.sidebar.divider()
     st.sidebar.caption("TSPlotter · Time series exploration")
     render_empty_state()
-    st.stop()
+    _stop_with_configuration()
+
+apply_pending_time_settings(raw_df)
 
 if upload_meta and upload_meta.get("format") == "mat_v73":
     lines = []
@@ -434,7 +442,7 @@ else:
 # Guard: Absolute time requires dt column
 if time_mode == "Absolute time" and not dt_col:
     st.warning("Choose a time column in the sidebar, or switch to Relative time to use row numbers.")
-    st.stop()
+    _stop_with_configuration()
 
 # ----------------------------------
 # Build prepared dataframe (CACHED)
@@ -453,24 +461,26 @@ try:
     )
 except Exception as e:
     st.error(str(e))
-    st.stop()
+    _stop_with_configuration()
 
 _parse_removed = len(raw_df) - len(prepared_df)
 if _parse_removed:
     st.warning(f"{_parse_removed:,} of {len(raw_df):,} rows could not be read as timestamps and were excluded. Check the time column and input layout in the sidebar.")
 if prepared_df.empty:
     st.info("No usable rows yet. Choose a different time column or input layout, or switch to Relative time.")
-    st.stop()
+    _stop_with_configuration()
 st.sidebar.success(f"Ready · {len(prepared_df):,} rows")
 st.sidebar.caption(f"X-axis: {prepared_df.index.name or 'index'}")
 st.sidebar.divider()
 st.sidebar.caption("TSPlotter · Time series exploration")
 
 
+apply_pending_view_settings(prepared_df)
 st.subheader(st.session_state.source_label)
 with st.expander("Filter data", expanded=False):
     st.caption("Narrow the dataset before plotting. Filters apply to every chart, preview, and dataset export.")
-    filter_conditions = render_filter_controls(prepared_df, key_prefix="flt2", allow_time_index=True)
+    filter_conditions = render_filter_controls(prepared_df, key_prefix="flt2", allow_time_index=True,
+                                               on_invalid=render_configuration_panel)
 
 mask = build_mask(prepared_df, filter_conditions)
 filtered_df = prepared_df.loc[mask].copy()
@@ -489,7 +499,7 @@ else:
     st.caption(f"X-axis: {work.index.name or 'index'} · {len(work):,} of {len(prepared_df):,} prepared rows in view")
 if work.empty:
     st.warning("No rows match this view. Open Filter data and clear or widen your conditions.")
-    st.stop()
+    _stop_with_configuration()
 
 # ----------------------------------
 # Plots
@@ -845,7 +855,7 @@ else:
                     color_group = prepare_group(plot_sc, color_settings, discrete=False)
                 except ValueError as error:
                     st.error(f"Color grouping: {error}")
-                    st.stop()
+                    _stop_with_configuration()
                 # Fit bins on all usable filtered rows, then sample only the plotted points.
                 plot_sc = _maybe_downsample_for_plot(plot_sc, max_points=max_points_sc)
                 color_arg = color_group.column if color_group else None
@@ -1030,12 +1040,12 @@ else:
                     color_group = prepare_group(plot_sc, color_settings)
                 except ValueError as error:
                     st.error(f"Color grouping: {error}")
-                    st.stop()
+                    _stop_with_configuration()
                 try:
                     marker_group = prepare_group(plot_sc, marker_settings)
                 except ValueError as error:
                     st.error(f"Marker grouping: {error}")
-                    st.stop()
+                    _stop_with_configuration()
 
                 # Keep independent derived grouping columns so binning never replaces an axis.
                 plot_sc = _maybe_downsample_for_plot(plot_sc, max_points=max_points_sc)
@@ -1526,3 +1536,5 @@ with st.expander("Summary statistics", expanded=False):
         st.dataframe(summary_df, use_container_width=True)
     else:
         st.info("Choose a numeric signal to see its summary statistics.")
+
+render_configuration_panel()

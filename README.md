@@ -26,6 +26,19 @@ Open the local URL printed by Streamlit. To use a different port, add `--server.
 
 The row metrics and preview reflect the active filters. Invalid timestamps are excluded with a warning. Chart-specific missing-value removal and sampling can reduce plotted rows; chart CSV exports match those plotted rows. Histogram exports contain bin counts. Chart selections survive switching views and reset when the dataset changes.
 
+### Save and load plotting configurations
+
+Open **Plot configuration** in the sidebar:
+
+1. Set up your charts, then click **Save configuration** to download `tsplotter-config.json`.
+2. In another session, choose the dataset, upload the saved JSON file under **Configuration file**, and click **Load configuration**.
+
+The file remembers the selected chart, columns, panels, styling, palettes, marker shapes, numeric bins, performance limits, time parsing/timezones, filters, and summary selections. Settings from previously used chart views are included too. Plot zoom and pan are temporary interactions; use the chart controls to define the saved setup.
+
+The data file is loaded separately. You can load a configuration first and choose the dataset afterwards. Saved columns are matched by name; missing columns or incompatible filters are skipped with notices, and an unavailable active time column falls back to row numbers. Bin intervals are recalculated from the current filtered data using the saved bin count or width.
+
+Loading replaces the previous setup, including resetting options absent from the saved file to their defaults. An invalid or unsupported file leaves the current setup intact. Save is unavailable until a dataset is selected and any pending time setup is usable.
+
 ### Bin scatter groups
 
 In **Grouped scatter**, select a numeric **Color by** or **Marker by** column, then choose its grouping mode:
@@ -51,7 +64,7 @@ The chart CSV preserves original values and adds separate color/marker bin-label
 
 Tests cover the filter engine and Streamlit workflows, including chart navigation, input validation, dataset resets, and consistency between filtered previews and CSV exports.
 
-`main.py` coordinates loading and analysis, `workspace_ui.py` contains shared presentation helpers and the example dataset, `grouping.py` computes numeric intervals, `scatter_grouping.py` handles scatter grouping controls, and `filters/` separates filter controls from filtering logic.
+`main.py` coordinates loading and analysis, `workspace_ui.py` contains shared presentation helpers and the example dataset, `grouping.py` computes numeric intervals, `scatter_grouping.py` handles scatter grouping controls, `plot_config.py` validates portable configuration files, `config_ui.py` applies them to the dataset, and `filters/` separates filter controls from filtering logic.
 
 ## Docker
 
