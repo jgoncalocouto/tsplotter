@@ -1,21 +1,23 @@
-# Browser migration acceptance checks
+# Browser workspace acceptance checks
 
-The original Streamlit application remains the behavioral reference except that
-browser charts must retain every usable point. Legacy sampling settings must be
-ignored with a notice; there must be no row-stride, point cap, or hidden sampling.
+These checks define the JavaScript application's behavior. Browser charts must
+retain every usable point. Older sampling fields imported from configuration
+files must be ignored with a notice; there must be no row-stride, point cap, or hidden sampling.
 Preview pagination is presentation only and must not affect analysis or exports.
 
 ## Data and preparation
 
-- CSV/TSV delimiter detection includes comma, semicolon, tab and pipe. Original
-  readers handle UTF-8 BOM, UTF-16, CP1252 and Latin-1. Quoted delimiters/newlines
-  are data, not row breaks.
+- CSV/TSV delimiter detection includes comma, semicolon, tab and pipe. The
+  importer handles UTF-8 and UTF-16 with a byte-order mark. Convert other text
+  encodings to UTF-8 before importing. Quoted delimiters/newlines are data, not
+  row breaks.
 - Parquet must preserve numeric values, nulls, timestamps and row counts. A
   pandas datetime index can exist in Parquet metadata rather than an ordinary
   visible column; make this usable as the time axis.
 - JSON supports records, JSONL and column-oriented objects. Excel uses the first
-  sheet by default and allows selecting another. MATLAB v7.3 is part of the
-  original import contract; unsupported import types must say so clearly.
+  sheet by default and allows selecting another. MATLAB v7.3 supports the plain
+  numeric vector/matrix layouts documented in the README; unsupported layouts
+  must produce an error explaining how to export a compatible table.
 - Auto-detection must not treat ordinary numeric measurements as nanosecond
   timestamps. Numeric epochs require explicit seconds/milliseconds selection.
 - Absolute-time preparation excludes invalid timestamps with a count, sorts by
@@ -35,27 +37,32 @@ Preview pagination is presentation only and must not affect analysis or exports.
 - Preview, summary metrics, all chart preparations and full-data export use the
   same filtered row set. Changing dataset resets stale column/view state.
 
-## Six chart views
+## Five chart views
 
 1. **Trends:** 1–6 synchronized-X panels with independent signal lists; markers,
    six line shapes, line width, log/linear scale, range slider, unified hover and
    spikes. Retain gaps. SVG line simplification must be disabled when used.
-2. **Distribution:** multi-signal overlaid counts using shared edges; automatic
+2. **Distribution:** 1–6 independent titled panels with add/duplicate/remove and
+   one selected settings editor. Each has its own signals, bin settings and
+   CSV/PNG exports; overlays use shared edges within that panel. Automatic
    Freedman–Diaconis width with Scott/Sturges fallbacks, fixed width and target
    count. Final edge is inclusive. CSV exports edges, centers, counts and bin
-   metadata rather than raw samples.
-3. **Scatter:** arbitrary X/Y including same source; optional continuous numeric
-   or categorical color, numeric color bins, palettes, marker size and opacity.
-   Exclude only rows missing/nonfinite in the selected axes/group variables.
-4. **Grouped scatter:** independent color and marker columns/modes, palettes and
-   custom marker sequences. Color and marker may use the same numeric source
-   with different bins. Binning preserves original axes and exports raw values
-   plus distinct derived labels. Legend order follows category/bin order.
-5. **Rolling window:** trailing min/mean/max measured in rows, current-row
+   metadata rather than raw samples. Shared filters affect every panel; empty
+   or all-nonfinite panels clear their output without blocking valid siblings.
+3. **Scatter:** one view for plain and grouped plots, with 1–6 independent
+   panels and one selected settings editor. Add, duplicate and remove panels;
+   keep each panel's title, X/Y, color, markers, bins and appearance independent.
+   Continuous numeric color works alongside category markers. Color and marker
+   may use the same numeric source with different bins. Binning preserves raw
+   axes and exports raw values plus distinct derived labels. Legends follow
+   category/bin order and toggle the corresponding point groups. Exclude only
+   rows missing/nonfinite in selected axes/group variables. Shared filters apply
+   to every panel; each card exports its own data/image and stacks on mobile.
+4. **Rolling window:** trailing min/mean/max measured in rows, current-row
    inclusion flag, full-window flag (`min_periods=window` versus 1), min/max band,
    raw markers and hover/range options. Excluding current shifts the input by
    exactly one row before the rolling calculation. Nulls do not become zeros.
-6. **Derivatives:** three aligned panels for raw/first/second backward differences.
+5. **Derivatives:** three aligned panels for raw/first/second backward differences.
    First derivative begins with null; second begins with two nulls. Respect
    seconds/minutes/hours/days/sample spacing or explicit numeric X. A zero delta
    produces null. Optional trailing rolling-mean smoothing changes derivatives
@@ -75,9 +82,11 @@ Preview pagination is presentation only and must not affect analysis or exports.
 
 ## Configuration and export
 
-- Save/load is versioned and data-free. Restore inactive charts as well as the
-  current view. Accept original v1 configuration keys or clearly communicate
-  unsupported settings; ignore all legacy `*_maxpts` without sampling.
+- Save/load is versioned and data-free. Version 2 preserves every scatter and distribution panel
+  and inactive chart as well as the current view. Accept original v1 settings,
+  migrating distinct Scatter and Grouped scatter plots into independent panels
+  and old histogram settings into one Distribution panel;
+  ignore all legacy `*_maxpts` without sampling.
 - Missing columns fall back or skip with notices. Loading defaults clears prior
   overrides. Invalid config leaves previous valid state untouched.
 - Configuration can be loaded before the dataset. Data is always selected

@@ -396,7 +396,14 @@ async function distribution(spec) {
   const pooled = selections.join(' UNION ALL ');
   const stats = await queryColumns(`SELECT min(v) AS low, max(v) AS high, count(*) AS n, quantile_cont(v, 0.25) AS q1, quantile_cont(v, 0.75) AS q3, stddev_samp(v) AS stddev FROM (${pooled}) WHERE ${finite('v')}`);
   const low = stats.low[0], high = stats.high[0], n = stats.n[0];
-  if (!n) throw new Error('No finite values remain after filtering.');
+  if (!n) {
+    const totalRows = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where}`));
+    return {
+      columns: {bin_left: [], bin_right: [], bin_center: [], ...Object.fromEntries(y.map(name => [name, []]))},
+      rowCount: 0, totalRows, sourceRows: sourceMeta.rowCount,
+      meta: {kind: 'distribution', binCount: 0, range: [], observationCounts: Object.fromEntries(y.map(name => [name, 0]))},
+    };
+  }
   let settings = typeof spec.bins === 'number' ? {mode: 'count', count: spec.bins} : {...spec.bins};
   if (!settings.mode || settings.mode === 'auto') {
     let width = 2 * (stats.q3[0] - stats.q1[0]) * n ** (-1 / 3);

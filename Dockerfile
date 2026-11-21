@@ -1,23 +1,14 @@
-# Minimal Dockerfile for the Time-Series Plot Helper (Streamlit + Plotly)
-FROM python:3.11-slim
-
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
-
+FROM node:24-alpine AS build
 WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-# Install Python deps
-COPY requirements.txt /app/requirements.txt
-RUN pip install --upgrade pip && pip install -r /app/requirements.txt
-
-# Copy the app and its local modules.
-COPY . /app
-
-EXPOSE 8501
-ENV PORT=8501
-
-# Start Streamlit
-CMD ["bash", "-lc", "streamlit run main.py --server.port ${PORT} --server.address 0.0.0.0"]
+# The deployed application only serves static files; analysis runs in the browser.
+FROM nginx:stable-alpine
+ENV PORT=8080
+ENV NGINX_ENVSUBST_FILTER=^PORT$
+COPY deploy/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist/ /usr/share/nginx/html/
+EXPOSE 8080

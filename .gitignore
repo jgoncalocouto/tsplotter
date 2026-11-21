@@ -1,6 +1,20 @@
+# Local tooling left from the retired application; never part of the JS build.
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .spyproject/
 artifacts/
+
+# JavaScript dependencies, builds and test output.
+/node_modules/
+/dist/
+/public/duckdb/
+/fixture.parquet
+/tmp_fixture.parquet
+/test-results/
+/playwright-report/
+*.log
+.env
+.env.*
+!.env.example

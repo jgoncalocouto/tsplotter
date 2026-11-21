@@ -1,3 +1,5 @@
+import {distributionPanels,scatterPanels} from './config.js';
+
 export const COLORS=['#6251c6','#13a79b','#e89b40','#df617b','#438cd8','#9c6ec6','#717f98','#9bbf58','#b77662','#d071bb'];
 const PALETTE_COLORS={
  Plotly:COLORS,D3:['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'],
@@ -9,14 +11,23 @@ const PALETTE_COLORS={
  Dark24:['#2e91e5','#e15f99','#1ca71c','#fb0d0d','#da16ff','#222a2a','#b68100','#750d86','#eb663b','#511cfb','#00a08b','#fb00d1','#fc0080','#b2828d','#6c7c32','#778aae','#862a16','#a777f1','#620042','#1616a7','#da60ca','#6c4516','#0d2a63','#af0038'],
  Light24:['#fd3216','#00fe35','#6a76fc','#fed4c4','#fe00ce','#0df9ff','#f6f926','#ff9616','#479b55','#eea6fb','#dc587d','#d626ff','#6e899c','#00b5f7','#b68e00','#c9fbe5','#ff0092','#22ffa7','#e3ee9e','#86ce00','#bc7196','#7e7dcd','#fc6955','#e48f72']
 };
-const numeric=value=>value!==null&&value!==undefined&&Number.isFinite(Number(value));
+const MARKER_PRESETS={
+ 'Core Shapes':['circle','square','diamond','cross','x','triangle-up','triangle-down','star'],
+ 'Crosshair Set':['cross','x','cross-thin','x-thin','asterisk'],
+ 'Directional':['triangle-up','triangle-right','triangle-down','triangle-left','diamond'],
+ 'Starburst':['star','hexagram','star-triangle-up','star-square','star-diamond'],
+ 'Minimal Dots':['circle','circle-open','square','square-open','diamond','diamond-open'],
+};
+const escapeLabel=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+const isGroup=name=>Boolean(name)&&name!=='(none)';
+const finiteNumber=value=>typeof value==='number'&&Number.isFinite(value);
 const values=(columns,name)=>columns[name]??[];
 const axis=(i)=>i===0?'':String(i+1);
 const num=(s,key,fallback)=>Number.isFinite(Number(s[key]))?Number(s[key]):fallback;
 const check=(s,key,fallback)=>s[key]===undefined?fallback:Boolean(s[key]);
-export function buildFigure(result,settings,xName){
+export function buildFigure(result,settings,xName,panelIndex=0){
  const c=result.columns, mode=settings.plot_type??'Trends';
- const traces=[]; let panels=1;
+ const traces=[],warnings=[]; let panels=1,scatterGroups;
  const layout={
   autosize:true,paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'#ffffff',
   font:{family:'Inter, "Segoe UI", system-ui, sans-serif',size:13,color:'#48556b'},
@@ -49,17 +60,69 @@ export function buildFigure(result,settings,xName){
   for(let i=0;i<count;i++){let cols=settings[`mlc_cols_${i}`]??[];for(const name of cols){line(name,values(c,name),i,{mode:check(settings,'mlc_markers',false)?'lines+markers':'lines',marker:{size:4},line:{width:num(settings,'mlc_width',2),shape:settings.mlc_shape??'linear',simplify:false}});}layout[`yaxis${axis(i)}`].type=settings.mlc_ytype??'linear';}
   rangeSlider(`xaxis${axis(count-1)}`,check(settings,'mlc_rangeslider',true));layout.hovermode=check(settings,'mlc_unified',true)?'x unified':'closest';
  } else if(mode==='Distribution'){
+  const panel=distributionPanels(settings)[panelIndex];
+  if(!panel)throw new Error(`Distribution panel ${panelIndex+1} does not exist.`);
   axes(1);layout.hovermode='closest';layout.barmode='overlay';layout.xaxis.title={text:'Value'};layout.yaxis.title={text:'Count'};
-  for(const name of settings.hist_cols_main??[]){traces.push({type:'bar',name,x:values(c,'bin_center'),y:values(c,name),width:values(c,'bin_right').map((v,i)=>v-c.bin_left[i]),opacity:.65,customdata:values(c,'bin_left').map((v,i)=>[v,c.bin_right[i]]),hovertemplate:'[%{customdata[0]}, %{customdata[1]})<br>Count: %{y}<extra>%{fullData.name}</extra>'});}
+  layout.uirevision=`distribution:${panelIndex}:${JSON.stringify([panel.columns,panel.binMode,panel.binCount,panel.binWidth])}`;
+  for(const name of panel.columns){traces.push({type:'bar',name,x:values(c,'bin_center'),y:values(c,name),width:values(c,'bin_right').map((v,i)=>v-c.bin_left[i]),opacity:.65,customdata:values(c,'bin_left').map((v,i)=>[v,c.bin_right[i]]),hovertemplate:'[%{customdata[0]}, %{customdata[1]})<br>Count: %{y}<extra>%{fullData.name}</extra>'});}
  } else if(mode==='Scatter'||mode==='Grouped scatter'){
-  axes(1);layout.hovermode='closest';let p=mode==='Scatter'?'sc':'sc2';let xn=settings[`${p}_x`],yn=settings[`${p}_y`];layout.xaxis.title={text:xn};layout.yaxis.title={text:yn};
-  const xx=values(c,xn),yy=values(c,yn);const colorKey=result.meta?.groups?.color?.column??'__color_group',markerKey=result.meta?.groups?.marker?.column??'__marker_group';
-  const cg=c[colorKey],mg=c[markerKey];const colorName=p==='sc'?settings.sc_group:settings.sc2_g1,markerName=p==='sc2'?settings.sc2_g2:null;
-  const groupOn=colorName&&colorName!=='(none)',markerOn=markerName&&markerName!=='(none)';
-  const colorRaw=values(c,colorName),continuous=groupOn&&!cg&&result.meta?.colorKind==='numeric'&&p==='sc';
-  const groups=new Map();for(let i=0;i<xx.length;i++){const a=groupOn&&!continuous?String(cg?.[i]??colorRaw[i]??'(missing)'):'',b=markerOn?String(mg?.[i]??c[markerName]?.[i]??'(missing)'):'';const k=JSON.stringify([a,b]);if(!groups.has(k))groups.set(k,{name:[a,b].filter(Boolean).join(' · ')||yn,x:[],y:[],color:[],group:a,marker:b});let g=groups.get(k);g.x.push(xx[i]);g.y.push(yy[i]);if(continuous)g.color.push(colorRaw[i]);}
-  const groupsA=result.meta?.groups?.color?.labels??[...new Set([...groups.values()].map(g=>g.group))],groupsB=result.meta?.groups?.marker?.labels??[...new Set([...groups.values()].map(g=>g.marker))];const palette=PALETTE_COLORS[p==='sc'?settings.sc_cmap_disc:settings.sc2_palette]??COLORS;const presets={'Core Shapes':['circle','square','diamond','cross','x','triangle-up','triangle-down','star'],'Crosshair Set':['cross','x','cross-thin','x-thin','asterisk'],'Directional':['triangle-up','triangle-right','triangle-down','triangle-left','diamond'],'Starburst':['star','hexagram','star-triangle-up','star-square','star-diamond'],'Minimal Dots':['circle','circle-open','square','square-open','diamond','diamond-open']};const custom=settings.sc2_marker_custom?.split(',').map(x=>x.trim()).filter(Boolean);const symbols=custom?.length?custom:presets[settings.sc2_marker_preset]??presets['Core Shapes'];
-  for(const g of groups.values()){traces.push({type:'scattergl',mode:'markers',name:g.name,x:g.x,y:g.y,marker:{size:num(settings,`${p}_msize`,7),opacity:num(settings,`${p}_mop`,.8),color:continuous?g.color:palette[groupsA.indexOf(g.group)%palette.length],symbol:symbols[groupsB.indexOf(g.marker)%symbols.length]??'circle',...(continuous?{colorscale:settings.sc_cmap_cont??'Viridis',showscale:true,colorbar:{title:{text:colorName}}}:{})}});}
+  const panel=scatterPanels(settings)[panelIndex];
+  if(!panel)throw new Error(`Scatter panel ${panelIndex+1} does not exist.`);
+  axes(1);layout.hovermode='closest';layout.uirevision=`scatter:${panelIndex}:${panel.x}:${panel.y}`;
+  layout.xaxis.title={text:panel.x};layout.yaxis.title={text:panel.y};
+  layout.xaxis.showspikes=false;layout.yaxis.showspikes=false;
+  const xx=values(c,panel.x),yy=values(c,panel.y);
+  const colorOn=isGroup(panel.color),markerOn=isGroup(panel.marker);
+  const colorMeta=result.meta?.groups?.color,markerMeta=result.meta?.groups?.marker;
+  const colorRaw=values(c,panel.color),markerRaw=values(c,panel.marker);
+  const numericColor=result.meta?.colorKind==='numeric'||colorRaw.length>0&&colorRaw.every(finiteNumber);
+  const continuous=colorOn&&!colorMeta&&panel.colorMode!=='discrete'&&numericColor;
+  if(colorOn&&!colorMeta&&panel.colorMode==='continuous'&&!numericColor)warnings.push('Continuous color needs a numeric column. Categorical colors are being used instead.');
+  const colorRows=colorOn&&!continuous?Array.from(values(c,colorMeta?.column??panel.color),String):[];
+  const markerRows=markerOn?Array.from(values(c,markerMeta?.column??panel.marker),String):[];
+  const colorOrder=colorMeta?.labels?.map(String)??[...new Set(colorRows)];
+  const markerOrder=markerMeta?.labels?.map(String)??[...new Set(markerRows)];
+  const occupiedColors=new Set(colorRows),occupiedMarkers=new Set(markerRows);
+  const palette=PALETTE_COLORS[panel.palette]??COLORS;
+  const custom=panel.customSymbols?.split(',').map(symbol=>symbol.trim()).filter(Boolean);
+  const symbols=custom?.length?custom:MARKER_PRESETS[panel.markerPreset]??MARKER_PRESETS['Core Shapes'];
+  const colorMap=new Map(colorOrder.map((category,index)=>[category,palette[index%palette.length]]));
+  const symbolMap=new Map(markerOrder.map((category,index)=>[category,symbols[index%symbols.length]]));
+  if(new Set([...occupiedColors].map(category=>colorMap.get(category))).size<occupiedColors.size)warnings.push('Some color groups share a palette color. Use fewer bins or a larger palette to distinguish every group.');
+  if(new Set([...occupiedMarkers].map(category=>symbolMap.get(category))).size<occupiedMarkers.size)warnings.push('Some marker groups share a symbol. Use fewer bins or more symbols to distinguish every group.');
+  const marker={size:panel.size??7,opacity:panel.opacity??.7,color:COLORS[0],symbol:'circle'};
+  if(continuous){
+   marker.color=colorRaw;marker.colorscale=panel.colormap??'Viridis';marker.showscale=true;
+   let low=Infinity,high=-Infinity;
+   for(const value of colorRaw){low=Math.min(low,value);high=Math.max(high,value);}
+   if(Number.isFinite(low)&&Number.isFinite(high)){marker.cmin=low;marker.cmax=high;}
+   marker.colorbar={title:{text:panel.color},thickness:14};layout.margin.r=84;
+  }else if(colorOn)marker.color=colorRows.map(category=>colorMap.get(category));
+  if(markerOn)marker.symbol=markerRows.map(category=>symbolMap.get(category));
+  const hoverColumns=[...new Set([colorOn?panel.color:undefined,markerOn?panel.marker:undefined].filter(Boolean))];
+  const hoverFields=hoverColumns.map(name=>({name,values:values(c,name)}));
+  if(colorMeta)hoverFields.push({name:'Color interval',values:values(c,colorMeta.column)});
+  if(markerMeta)hoverFields.push({name:'Marker interval',values:values(c,markerMeta.column)});
+  let hovertemplate=`${escapeLabel(panel.x)}: %{x}<br>${escapeLabel(panel.y)}: %{y}`;
+  hoverFields.forEach((field,index)=>{hovertemplate+=`<br>${escapeLabel(field.name)}: %{customdata[${index}]}`;});
+  traces.push({type:'scattergl',mode:'markers',name:panel.title||`Scatter ${panelIndex+1}`,x:xx,y:yy,marker,showlegend:false,
+   customdata:hoverFields.length?Array.from(xx,(_,index)=>hoverFields.map(field=>field.values[index])):undefined,
+   hovertemplate:hovertemplate+'<extra></extra>',meta:{scatterPoints:true,panelIndex}});
+  for(const [encoding,name,order,occupied,mapping]of[
+   ['color',panel.color,colorOrder,occupiedColors,colorMap],['marker',panel.marker,markerOrder,occupiedMarkers,symbolMap],
+  ]){
+   if(encoding==='color'&&!colorOn||encoding==='marker'&&!markerOn||encoding==='color'&&continuous)continue;
+   let first=true;
+   for(const category of order){
+    if(!occupied.has(category))continue;
+    const guideMarker={size:9,color:encoding==='color'?mapping.get(category):'#717f98',symbol:encoding==='marker'?mapping.get(category):'circle'};
+    traces.push({type:'scatter',mode:'markers',x:[null],y:[null],name:category,marker:guideMarker,showlegend:true,hoverinfo:'skip',
+     legendgroup:`scatter-${panelIndex}-${encoding}-${category}`,legendgrouptitle:first?{text:`${encoding==='color'?'Color':'Marker'}: ${name}`}:undefined,
+     meta:{scatterGuide:true,encoding,category,panelIndex}});
+    first=false;
+   }
+  }
+  scatterGroups={color:colorOn&&!continuous?colorRows:undefined,marker:markerOn?markerRows:undefined};
  }else if(mode==='Rolling window'){
   axes(1);const y=settings.rw_y;line(y,values(c,y),0,{mode:'markers',marker:{size:num(settings,'rw_msize',7),opacity:num(settings,'rw_mop',.7),color:'#9b93c7'}});
   line('Rolling minimum',values(c,`${y}__roll_min`),0,{line:{color:'#13a79b',width:1,simplify:false}});
@@ -71,14 +134,29 @@ export function buildFigure(result,settings,xName){
  // The modebar occupies the first row. A container-anchored legend begins
  // 36 px below it, independent of subplot count, slider height, or screen width.
  layout.legend.y=1-36/layout.height;
- return {data:traces,layout,config:{responsive:true,scrollZoom:true,displayModeBar:true,displaylogo:false,showTips:false,toImageButtonOptions:{format:'png',filename:'tsplotter',scale:2}}};
+ return {data:traces,layout,warnings,scatterGroups,config:{responsive:true,scrollZoom:true,displayModeBar:true,displaylogo:false,showTips:false,toImageButtonOptions:{format:'png',filename:'tsplotter',scale:2}}};
 }
-export function chartRequest(settings,x,filters){
+export function chartRequest(settings,x,filters,panelIndex=0){
  const map={'Trends':'trends','Distribution':'distribution','Scatter':'scatter','Grouped scatter':'grouped-scatter','Rolling window':'rolling','Derivatives':'derivatives'};let request={mode:map[settings.plot_type]??'trends',x,filters,timeAxis:{profile:settings.setup_profile,format:settings.setup_profile==='Custom strptime'?settings.setup_format:undefined,timezone:settings.setup_tz_mode==='Assume timezone and localize'?(settings.setup_assume_tz==='Custom...'?settings.setup_custom_tz:settings.setup_assume_tz):undefined,outputTimezone:settings.setup_out_tz==='Custom...'?settings.setup_target_tz:(settings.setup_out_tz==='(keep)'?undefined:settings.setup_out_tz)}};
  if(settings.setup_time_mode!=='Absolute time')delete request.timeAxis;
  if(request.mode==='trends')request.y=[...new Set(Array.from({length:Number(settings.mlc_n_subplots)||1},(_,i)=>settings[`mlc_cols_${i}`]??[]).flat())];
- if(request.mode==='distribution'){request.y=settings.hist_cols_main??[];request.bins={mode:settings.hist_binmode==='Fixed width'?'width':settings.hist_binmode==='Target #bins'?'count':'auto',count:Number(settings.hist_bins_main)||50,width:Number(settings.hist_width_input)||1};}
- if(request.mode==='scatter'||request.mode==='grouped-scatter'){delete request.timeAxis;const p=request.mode==='scatter'?'sc':'sc2';request.x=settings[`${p}_x`];request.y=[settings[`${p}_y`]];request.color=p==='sc'?settings.sc_group:settings.sc2_g1;request.marker=p==='sc2'?settings.sc2_g2:undefined;if(request.color==='(none)')delete request.color;if(request.marker==='(none)')delete request.marker;for(const [attr,prefix]of [['colorBinning',p==='sc'?'sc_color':'sc2_color'],['markerBinning','sc2_marker']]){const mode=settings[`${prefix}_bin_mode`];if(mode&&mode!=='Individual values')request[attr]={mode:mode==='Bin width'?'width':'count',count:Number(settings[`${prefix}_bin_count`])||5,width:Number(settings[`${prefix}_bin_width`])||1};}}
+ if(request.mode==='distribution'){
+  const panel=distributionPanels(settings)[panelIndex];
+  if(!panel)throw new Error(`Distribution panel ${panelIndex+1} does not exist.`);
+  request.y=[...panel.columns];
+  request.bins={mode:panel.binMode==='Fixed width'?'width':panel.binMode==='Target #bins'?'count':'auto',count:Number(panel.binCount??50),width:Number(panel.binWidth??1)};
+ }
+ if(request.mode==='scatter'||request.mode==='grouped-scatter'){
+  const panel=scatterPanels(settings)[panelIndex];
+  if(!panel)throw new Error(`Scatter panel ${panelIndex+1} does not exist.`);
+  request.mode='scatter';delete request.timeAxis;request.x=panel.x;request.y=[panel.y];
+  if(isGroup(panel.color))request.color=panel.color;
+  if(isGroup(panel.marker))request.marker=panel.marker;
+  for(const encoding of ['color','marker']){
+   const mode=panel[`${encoding}BinMode`];
+   if(isGroup(panel[encoding])&&mode&&mode!=='Individual values')request[`${encoding}Binning`]={mode:mode==='Bin width'?'width':'count',count:Number(panel[`${encoding}BinCount`]??5),width:Number(panel[`${encoding}BinWidth`]??1)};
+  }
+ }
  if(request.mode==='rolling'){request.y=[settings.rw_y];request.window=Number(settings.rw_window)||50;request.includeCurrent=settings.rw_include_current??true;request.requireFull=settings.rw_full??false;}
  if(request.mode==='derivatives'){request.y=[settings.der_y];request.derivativeUnit=(settings.setup_time_mode!=='Absolute time'&&settings.der_xmode!=='use numeric index values')?'sample':(settings.der_tunit??'seconds');request.xMode=settings.der_xmode??'index step (1)';request.smoothWindow=Number(settings.der_smooth)||1;}
  return request;

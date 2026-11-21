@@ -1,10 +1,15 @@
-.git
-.venv
-.pytest_cache
-__pycache__
-**/__pycache__
-.spyproject
-artifacts
-
-# The browser app has its own static build and hosting.
-browser/
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!vite.config.js
+!index.html
+!src/
+!src/**
+!scripts/
+!scripts/**
+!public/
+!public/**
+!deploy/
+!deploy/**
+public/duckdb/

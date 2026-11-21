@@ -1,6 +1,6 @@
-/** Portable TSPlotter v1 settings. Dataset bytes and browser file handles are never saved. */
+/** Portable TSPlotter settings. Dataset bytes and browser file handles are never saved. */
 export const CONFIG_APP = 'tsplotter';
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
 export const MAX_CONFIG_BYTES = 256 * 1024;
 export const ROW_INDEX = '(row number 0..N-1)';
 export const TIME_INDEX = '(use existing time index)';
@@ -8,7 +8,11 @@ export const FILTER_TIME_INDEX = '(time index)';
 export const PALETTES = ['Plotly', 'D3', 'Set1', 'Set2', 'Set3', 'Pastel', 'Bold', 'Dark24', 'Light24'];
 export const TIMEZONES = ['UTC', 'Europe/Lisbon', 'Europe/London', 'US/Eastern', 'US/Pacific', 'Asia/Tokyo'];
 export const BIN_MODES = ['Individual values', 'Number of bins', 'Bin width'];
-export const PLOT_TYPES = ['Trends', 'Distribution', 'Scatter', 'Grouped scatter', 'Rolling window', 'Derivatives'];
+export const PLOT_TYPES = ['Trends', 'Distribution', 'Scatter', 'Rolling window', 'Derivatives'];
+export const MAX_SCATTER_PANELS = 6;
+export const MAX_DISTRIBUTION_PANELS = 6;
+export const COLORMAPS = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Turbo', 'Blues', 'Greens', 'Greys', 'Oranges', 'Purples', 'Reds'];
+export const MARKER_PRESETS = ['Core Shapes', 'Crosshair Set', 'Directional', 'Starburst', 'Minimal Dots'];
 const enumSpec = (...choices) => ({kind: 'string', choices});
 const text = {kind: 'string'};
 const bool = {kind: 'bool'};
@@ -16,7 +20,9 @@ const strings = {kind: 'strings'};
 const int = (minimum, maximum) => ({kind: 'int', minimum, maximum});
 const number = (minimum, maximum, exclusiveMinimum = false) => ({kind: 'number', minimum, maximum, exclusiveMinimum});
 const specs = {
-  plot_type: enumSpec(...PLOT_TYPES), overview_cols: strings,
+  plot_type: enumSpec(...PLOT_TYPES, 'Grouped scatter'), overview_cols: strings,
+  scatter_panels: {kind: 'scatter-panels'},
+  distribution_panels: {kind: 'distribution-panels'},
   setup_time_mode: enumSpec('Absolute time', 'Relative time'), setup_index: text, setup_dt_col: text,
   setup_profile: enumSpec('Auto-detect', 'DMY (dd/mm/yyyy)', 'MDY (mm/dd/yyyy)', 'YMD (yyyy-mm-dd)', 'Unix epoch (seconds)', 'Unix epoch (milliseconds)', 'Custom strptime'),
   setup_format: text, setup_tz_mode: enumSpec('Treat as naive (no tz)', 'Assume timezone and localize', 'Input already has timezone'),
@@ -46,6 +52,126 @@ const dynamicSpecs = [
   [/^flt2_(?:low|up)_num_[0-9]$/, text], [/^flt2_op_[0-9]$/, enumSpec('is one of', 'is not one of', 'contains', 'not contains', 'starts with', 'ends with', 'regex')], [/^flt2_vals_[0-9]$/, strings], [/^flt2_(?:vals_csv|patt)_[0-9]$/, text], [/^flt2_(?:case|na)_[0-9]$/, bool],
 ];
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const panelSpecs = {
+  title: {...text, maxLength: 80}, x: text, y: text, color: text, marker: text,
+  colorMode: enumSpec('auto', 'continuous', 'discrete'),
+  colorBinMode: enumSpec(...BIN_MODES), colorBinCount: int(1, 100), colorBinWidth: number(0, undefined, true),
+  markerBinMode: enumSpec(...BIN_MODES), markerBinCount: int(1, 100), markerBinWidth: number(0, undefined, true),
+  palette: enumSpec(...PALETTES), colormap: enumSpec(...COLORMAPS), markerPreset: enumSpec(...MARKER_PRESETS),
+  customSymbols: text, size: int(3, 20), opacity: number(.2, 1),
+};
+const distributionPanelSpecs = {
+  title: {...text, maxLength: 80}, columns: strings,
+  binMode: enumSpec('Auto (width)', 'Fixed width', 'Target #bins'), binCount: int(10, 200), binWidth: number(1e-12),
+};
+
+export function defaultDistributionPanel(schema = {}, index = 0) {
+  const numeric = schemaColumns(schema).filter(column => columnKind(column) === 'numeric').map(column => column.name);
+  return {title: `Distribution ${index + 1}`, columns: numeric.slice(0, 1), binMode: 'Auto (width)', binCount: 50, binWidth: 1};
+}
+
+function legacyDistributionPanel(settings, schema) {
+  const defaults = defaultDistributionPanel(schema);
+  return {
+    ...defaults, columns: [...(settings.hist_cols_main ?? defaults.columns)],
+    binMode: settings.hist_binmode ?? defaults.binMode,
+    binCount: settings.hist_bins_main ?? defaults.binCount, binWidth: settings.hist_width_input ?? defaults.binWidth,
+  };
+}
+
+/** Return independent runtime settings, including transient values from the editor. */
+export function distributionPanels(settings = {}, schema = {}) {
+  if (Array.isArray(settings.distribution_panels)) {
+    return settings.distribution_panels.map((panel, index) => {
+      const defaults = defaultDistributionPanel(schema, index);
+      return {...defaults, ...panel, columns: [...(panel.columns ?? defaults.columns)]};
+    });
+  }
+  return [legacyDistributionPanel(settings, schema)];
+}
+
+function validateDistributionPanels(value, warnings) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_DISTRIBUTION_PANELS) throw new Error(`Invalid setting 'distribution_panels': use between 1 and ${MAX_DISTRIBUTION_PANELS} distribution panels.`);
+  return value.map((panel, index) => {
+    if (!isObject(panel)) throw new Error(`Invalid setting 'distribution_panels[${index}]': expected a settings object.`);
+    const clean = {};
+    for (const [key, field] of Object.entries(panel)) {
+      if (!Object.hasOwn(distributionPanelSpecs, key)) warnings.push(`Ignored unsupported setting: distribution_panels[${index}].${key.slice(0, 100)}.`);
+      else clean[key] = validateValue(`distribution_panels[${index}].${key}`, field, distributionPanelSpecs[key]);
+    }
+    return {...defaultDistributionPanel({}, index), ...clean};
+  });
+}
+
+export function defaultScatterPanel(schema = {}, index = 0) {
+  const columns = schemaColumns(schema);
+  const numeric = columns.filter(column => columnKind(column) === 'numeric').map(column => column.name);
+  const all = columns.map(column => column.name);
+  return {
+    title: `Scatter ${index + 1}`, x: numeric[0] || all[0] || '', y: numeric[1] || numeric[0] || all[1] || all[0] || '',
+    color: '(none)', marker: '(none)', colorMode: 'auto',
+    colorBinMode: 'Individual values', colorBinCount: 5, colorBinWidth: 1,
+    markerBinMode: 'Individual values', markerBinCount: 5, markerBinWidth: 1,
+    palette: 'Plotly', colormap: 'Viridis', markerPreset: 'Core Shapes', customSymbols: '', size: 7, opacity: .7,
+  };
+}
+
+function legacyScatterPanel(settings, schema, grouped = false) {
+  const defaults = defaultScatterPanel(schema);
+  const prefix = grouped ? 'sc2' : 'sc';
+  const get = (name, fallback) => settings[name] === undefined ? fallback : settings[name];
+  const colorPrefix = grouped ? 'sc2_color' : 'sc_color';
+  return {
+    ...defaults, x: get(`${prefix}_x`, defaults.x), y: get(`${prefix}_y`, defaults.y),
+    color: get(grouped ? 'sc2_g1' : 'sc_group', '(none)'), marker: grouped ? get('sc2_g2', '(none)') : '(none)',
+    colorMode: grouped ? 'discrete' : 'auto',
+    colorBinMode: get(`${colorPrefix}_bin_mode`, defaults.colorBinMode), colorBinCount: get(`${colorPrefix}_bin_count`, 5), colorBinWidth: get(`${colorPrefix}_bin_width`, 1),
+    markerBinMode: grouped ? get('sc2_marker_bin_mode', defaults.markerBinMode) : defaults.markerBinMode,
+    markerBinCount: grouped ? get('sc2_marker_bin_count', 5) : 5, markerBinWidth: grouped ? get('sc2_marker_bin_width', 1) : 1,
+    palette: get(grouped ? 'sc2_palette' : 'sc_cmap_disc', defaults.palette), colormap: get('sc_cmap_cont', defaults.colormap),
+    markerPreset: grouped ? get('sc2_marker_preset', defaults.markerPreset) : defaults.markerPreset,
+    customSymbols: grouped ? get('sc2_marker_custom', '') : '', size: get(`${prefix}_msize`, defaults.size), opacity: get(`${prefix}_mop`, defaults.opacity),
+  };
+}
+
+function hasLegacyScatterSettings(settings, prefix) {
+  return Object.keys(settings).some(key => key.startsWith(`${prefix}_`) && key !== `${prefix}_maxpts`);
+}
+
+function legacyScatterPanels(settings, schema) {
+  const hasSimple = hasLegacyScatterSettings(settings, 'sc');
+  const hasGrouped = hasLegacyScatterSettings(settings, 'sc2');
+  const groupedFirst = settings.plot_type === 'Grouped scatter' || !hasSimple && hasGrouped;
+  const first = legacyScatterPanel(settings, schema, groupedFirst);
+  const panels = [first];
+  if (hasSimple && hasGrouped) {
+    const second = legacyScatterPanel(settings, schema, !groupedFirst);
+    const signature = panel => JSON.stringify({...panel, title: '', colorMode: panel.color === '(none)' ? 'auto' : panel.colorMode});
+    if (signature(first) !== signature(second)) panels.push(second);
+  }
+  return panels.map((panel, index) => ({...panel, title: `Scatter ${index + 1}`}));
+}
+
+/** Read runtime panels without mutating state or rejecting transient editor input. */
+export function scatterPanels(settings = {}, schema = {}) {
+  if (Array.isArray(settings.scatter_panels)) {
+    return settings.scatter_panels.map((panel, index) => ({...defaultScatterPanel(schema, index), ...panel}));
+  }
+  return legacyScatterPanels(settings, schema);
+}
+
+function validateScatterPanels(value, warnings) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_SCATTER_PANELS) throw new Error(`Invalid setting 'scatter_panels': use between 1 and ${MAX_SCATTER_PANELS} scatter panels.`);
+  return value.map((panel, index) => {
+    if (!isObject(panel)) throw new Error(`Invalid setting 'scatter_panels[${index}]': expected a settings object.`);
+    const clean = {};
+    for (const [key, field] of Object.entries(panel)) {
+      if (!Object.hasOwn(panelSpecs, key)) warnings.push(`Ignored unsupported setting: scatter_panels[${index}].${key.slice(0, 100)}.`);
+      else clean[key] = validateValue(`scatter_panels[${index}].${key}`, field, panelSpecs[key]);
+    }
+    return {...defaultScatterPanel({}, index), ...clean};
+  });
+}
 export function settingSpec(key) {
   if (typeof key !== 'string') return undefined;
   return Object.hasOwn(specs, key) ? specs[key] : dynamicSpecs.find(([pattern]) => pattern.test(key))?.[1];
@@ -72,7 +198,8 @@ function validateValue(key, value, spec) {
     if (!Array.isArray(value) || value.length > 2000) error('expected a list of at most 2000 names or values.');
     return value.map(item => validateValue(key, item, text));
   } else if (spec.kind === 'string') {
-    if (typeof value !== 'string' || value.length > 10000) error('expected text of at most 10000 characters.');
+    const maxLength = spec.maxLength ?? 10000;
+    if (typeof value !== 'string' || value.length > maxLength) error(`expected text of at most ${maxLength} characters.`);
     if (spec.choices && !spec.choices.includes(value)) error(`choose one of ${spec.choices.join(', ')}.`);
   } else if (spec.kind === 'date') {
     if (typeof value !== 'string' || !validDate(value)) error('expected an ISO date such as 2025-01-31.');
@@ -89,8 +216,13 @@ export function validateSettings(settings) {
   for (const [key, value] of Object.entries(settings)) {
     const spec = settingSpec(key);
     if (!spec) warnings.push(`Ignored unsupported setting: ${key.slice(0, 100)}.`);
+    else if (spec.kind === 'scatter-panels') clean[key] = validateScatterPanels(value, warnings);
+    else if (spec.kind === 'distribution-panels') clean[key] = validateDistributionPanels(value, warnings);
     else clean[key] = validateValue(key, value, spec);
   }
+  if (!Object.hasOwn(clean, 'scatter_panels') && (hasLegacyScatterSettings(clean, 'sc') || hasLegacyScatterSettings(clean, 'sc2'))) clean.scatter_panels = legacyScatterPanels(clean);
+  if (!Object.hasOwn(clean, 'distribution_panels') && Object.keys(clean).some(key => key.startsWith('hist_'))) clean.distribution_panels = [legacyDistributionPanel(clean)];
+  if (clean.plot_type === 'Grouped scatter') clean.plot_type = 'Scatter';
   return {settings: clean, warnings};
 }
 /** JSON.parse loses duplicate fields. A small strict reader rejects ambiguity before applying any settings. */
@@ -153,19 +285,37 @@ export function decodeConfig(data) {
   catch (error) {throw new Error(`Could not read configuration: ${error.message}`);}
   if (!isObject(document)) throw new Error('A configuration must be a JSON object.');
   if (document.app !== CONFIG_APP) throw new Error('This file is not a TSPlotter configuration.');
-  if (document.version !== CONFIG_VERSION) throw new Error(`Unsupported configuration version. This app supports version ${CONFIG_VERSION}.`);
+  if (![1, CONFIG_VERSION].includes(document.version)) throw new Error(`Unsupported configuration version. This app supports versions 1 and ${CONFIG_VERSION}.`);
   if (!Object.hasOwn(document, 'settings')) throw new Error('The configuration is missing its settings object.');
   return validateSettings(document.settings);
 }
 export function encodeConfig(state) {
   const snapshot = Object.fromEntries(Object.entries(state).filter(([key]) => isConfigKey(key)));
+  if (Array.isArray(snapshot.distribution_panels)) snapshot.distribution_panels = snapshot.distribution_panels.map(panel => {
+    if (!isObject(panel)) return panel;
+    const clean = {...panel};
+    if (clean.binMode !== 'Fixed width') delete clean.binWidth;
+    if (clean.binMode !== 'Target #bins') delete clean.binCount;
+    return clean;
+  });
+  if (Array.isArray(snapshot.scatter_panels)) snapshot.scatter_panels = snapshot.scatter_panels.map(panel => {
+    if (!isObject(panel)) return panel;
+    const clean = {...panel};
+    for (const prefix of ['color', 'marker']) {
+      if (clean[`${prefix}BinMode`] !== 'Bin width') delete clean[`${prefix}BinWidth`];
+      if (clean[`${prefix}BinMode`] !== 'Number of bins') delete clean[`${prefix}BinCount`];
+    }
+    return clean;
+  });
   // Old inactive bin widths may legitimately be zero; do not export unused controls.
   for (const prefix of ['sc_color', 'sc2_color', 'sc2_marker']) {
     if (snapshot[`${prefix}_bin_mode`] !== 'Bin width') delete snapshot[`${prefix}_bin_width`];
     if (snapshot[`${prefix}_bin_mode`] !== 'Number of bins') delete snapshot[`${prefix}_bin_count`];
   }
+  if (snapshot.hist_binmode !== 'Fixed width') delete snapshot.hist_width_input;
+  if (snapshot.hist_binmode !== 'Target #bins') delete snapshot.hist_bins_main;
   const {settings} = validateSettings(snapshot);
-  const json = JSON.stringify({app: CONFIG_APP, version: CONFIG_VERSION, settings}, null, 2);
+  const json = JSON.stringify({app: CONFIG_APP, version: settings.scatter_panels || settings.distribution_panels ? CONFIG_VERSION : 1, settings}, null, 2);
   if (new TextEncoder().encode(json).length > MAX_CONFIG_BYTES) throw new Error('This configuration is too large. Save fewer selected values.');
   return json;
 }
@@ -203,6 +353,14 @@ export function normalizeConfiguration(settings, schema) {
     if (missing.length) warnings.push(`Unavailable numeric columns were skipped: ${missing.join(', ')}.`);
     clean[key] = clean[key].filter(name => numeric.has(name));
   }
+  if (clean.distribution_panels) clean.distribution_panels = clean.distribution_panels.map((panel, index) => {
+    const missing = panel.columns.filter(name => !numeric.has(name));
+    let selected = panel.columns.filter(name => numeric.has(name));
+    const needsDefault = !selected.length;
+    if (!selected.length) selected = defaultDistributionPanel(schema, index).columns;
+    if (missing.length) warnings.push(`Distribution ${index + 1}: unavailable numeric columns were skipped: ${missing.join(', ')}.${needsDefault && selected.length ? ' The first numeric signal is selected.' : ''}`);
+    return {...panel, columns: selected};
+  });
   for (const [prefix, selector] of [['sc_color', 'sc_group'], ['sc2_color', 'sc2_g1'], ['sc2_marker', 'sc2_g2']]) {
     // No grouping is an intentional selection. Keep its inactive controls for later use.
     if (clean[selector] === '(none)' || numeric.has(clean[selector])) continue;
@@ -210,6 +368,30 @@ export function normalizeConfiguration(settings, schema) {
     if (keys.some(key => clean[key] !== undefined)) warnings.push(`Saved numeric bins for '${clean[selector] || selector}' were skipped because its column is missing or nonnumeric.`);
     keys.forEach(key => delete clean[key]);
   }
+  if (clean.scatter_panels) clean.scatter_panels = clean.scatter_panels.map((panel, index) => {
+    const next = {...panel}, defaults = defaultScatterPanel(schema, index);
+    for (const field of ['x', 'y']) {
+      if (!names.has(next[field])) {
+        if (next[field]) warnings.push(`Scatter ${index + 1}: saved ${field.toUpperCase()} column '${next[field]}' is unavailable. A default signal is selected.`);
+        next[field] = defaults[field];
+      }
+    }
+    for (const field of ['color', 'marker']) {
+      if (next[field] !== '(none)' && !names.has(next[field])) {
+        warnings.push(`Scatter ${index + 1}: saved ${field} column '${next[field]}' is unavailable. Grouping was turned off.`);
+        next[field] = '(none)';
+      }
+      if (next[field] !== '(none)' && !numeric.has(next[field])) {
+        if (next[`${field}BinMode`] !== 'Individual values') warnings.push(`Scatter ${index + 1}: numeric ${field} bins were skipped for nonnumeric column '${next[field]}'.`);
+        next[`${field}BinMode`] = 'Individual values';
+      }
+    }
+    if (next.colorMode === 'continuous' && next.color !== '(none)' && !numeric.has(next.color)) {
+      next.colorMode = 'auto';
+      warnings.push(`Scatter ${index + 1}: continuous color requires a numeric column. Automatic color was selected.`);
+    }
+    return next;
+  });
   const fields = Object.fromEntries(Object.entries(clean).filter(([key]) => key.startsWith('flt2_')));
   for (const key of Object.keys(fields)) delete clean[key];
   let count = 0;
@@ -283,6 +465,8 @@ export function defaultSettings(schema = {}) {
   const time = columns.find(column => columnKind(column) === 'datetime')?.name;
   return {
     plot_type: 'Trends', overview_cols: numeric.slice(0, 4),
+    scatter_panels: [defaultScatterPanel(schema)],
+    distribution_panels: [defaultDistributionPanel(schema)],
     setup_time_mode: time ? 'Absolute time' : 'Relative time', setup_index: ROW_INDEX, setup_dt_col: time || '', setup_profile: 'Auto-detect', setup_format: '', setup_tz_mode: 'Treat as naive (no tz)', setup_assume_tz: 'UTC', setup_out_tz: '(keep)', setup_custom_tz: '', setup_target_tz: '',
     mlc_n_subplots: 1, ...Object.fromEntries(Array.from({length: 6}, (_, i) => [`mlc_cols_${i}`, numeric[i] ? [numeric[i]] : []])), mlc_shape: 'linear', mlc_width: 2, mlc_ytype: 'linear', mlc_markers: false, mlc_rangeslider: true, mlc_unified: true, mlc_spikes: true,
     hist_cols_main: numeric.slice(0, 1), hist_binmode: 'Auto (width)', hist_width_input: 1, hist_bins_main: 50,

@@ -227,8 +227,9 @@ function createPicker(select) {
 /** Safe to call after every view/configuration/dataset render; existing controls are synchronized once. */
 export function enhancePickers(root = document) {
   cleanupDetached();
-  const selects = [...root.querySelectorAll('select[data-key][multiple]')];
-  if (root.matches?.('select[data-key][multiple]')) selects.unshift(root);
+  const selector = 'select[data-key][multiple],select[data-panel-key][multiple]';
+  const selects = [...root.querySelectorAll(selector)];
+  if (root.matches?.(selector)) selects.unshift(root);
   return selects.map(select => {
     const existing = bySelect.get(select);
     if (existing) {existing.sync(); return existing;}

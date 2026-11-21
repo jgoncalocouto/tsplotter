@@ -76,7 +76,7 @@ export function numericDatasetColumns({name, shape, values}, {matlab = true} = {
   }));
 }
 export function numericColumnsToRows(columns) {
-  if (!columns.length) throw new Error('No plain numeric vectors or matrices were found. MATLAB objects, cells and timetables with object references are not supported in this browser importer. Export the desired table to Parquet or use the existing Streamlit version.');
+  if (!columns.length) throw new Error('No plain numeric vectors or matrices were found. MATLAB objects, cells and timetables with object references are not supported in this importer. Export the desired table to Parquet or CSV before opening it.');
   const expected = columns[0].values.length;
   if (columns.some(column => column.values.length !== expected)) throw new Error('The numeric datasets have different row counts. Select datasets from one table, or export the desired MATLAB table to Parquet. No rows have been discarded.');
   const names = uniqueColumnNames(columns.map(column => column.name));

@@ -14,6 +14,10 @@ try {
   const h=await e.query({mode:'distribution',y:['v'],bins:{mode:'count',count:3}});
   const g=await e.query({mode:'grouped-scatter',x:'x',y:['v'],color:'v',colorBinning:{mode:'count',count:3}});
   const s=await e.summary([]);
+  await e.importRows([{x:0,v:null},{x:1,v:5},{x:2,v:null}]);
+  const emptyFiltered=await e.query({mode:'distribution',y:['v'],filters:[{kind:'numeric',column:'x',low:4}]});
+  const emptyFinite=await e.query({mode:'distribution',y:['v'],filters:[{kind:'numeric',column:'x',up:0}]});
+  const validAfterEmpty=await e.query({mode:'distribution',y:['v'],bins:{mode:'count',count:3}});
   await e.importRows([{date:'01/02/2026 12:30:00',v:1},{date:'02/02/2026 12:30:00',v:2},{date:'broken',v:3}]);
   const axis={x:'date',timeAxis:{profile:'DMY (dd/mm/yyyy)'}};
   const dmy=await e.query({mode:'trends',x:'date',y:['v'],timeAxis:axis.timeAxis});
@@ -22,11 +26,16 @@ try {
   await e.importRows([{date:0,v:1},{date:1000,v:2}]);const epoch=await e.query({mode:'trends',x:'date',y:['v'],timeAxis:{profile:'Unix epoch (milliseconds)'}});
   await e.importRows([{date:'2026-03-29 00:30:00',v:0},{date:'2026-03-29 02:30:00',v:3600},{date:'2026-03-29 03:30:00',v:7200}]);
   const tz=await e.query({mode:'derivatives',x:'date',y:['v'],derivativeUnit:'seconds',timeAxis:{profile:'Auto-detect',timezone:'Europe/Lisbon',outputTimezone:'Europe/Lisbon'}});
-  await e.close();return {meta,d,rolling,h,g,s,dmy,f,preview,summary,epoch,tz};
+  await e.close();return {meta,d,rolling,h,g,s,emptyFiltered,emptyFinite,validAfterEmpty,dmy,f,preview,summary,epoch,tz};
  });
  assert.equal(r.meta.rowCount,4);assert.deepEqual(r.d.columns.v__d1,[null,1,3,5]);assert.deepEqual(r.d.columns.v__d2,[null,null,2,2]);
  assert.deepEqual(r.rolling.columns.v__roll_mean,[null,null,.5,2.5]);assert.deepEqual(r.rolling.columns.v__roll_min,[null,null,0,1]);assert.deepEqual(r.rolling.columns.v__roll_max,[null,null,1,4]);
  assert.deepEqual(r.h.columns.v,[2,1,1]);assert.deepEqual(r.g.columns.v,[0,1,4,9]);assert.deepEqual(r.g.meta.groups.color.counts,[2,1,1]);assert.deepEqual(r.s.columns.mean,[1.5,3.5]);
+ for(const [result,totalRows]of[[r.emptyFiltered,0],[r.emptyFinite,1]]){
+  assert.deepEqual(result.columns,{bin_left:[],bin_right:[],bin_center:[],v:[]});assert.equal(result.rowCount,0);assert.equal(result.totalRows,totalRows);assert.equal(result.sourceRows,3);
+  assert.equal(result.meta.kind,'distribution');assert.equal(result.meta.binCount,0);assert.deepEqual(result.meta.observationCounts,{v:0});
+ }
+ assert.equal(r.validAfterEmpty.totalRows,3);assert.equal(r.validAfterEmpty.columns.v.reduce((sum,count)=>sum+count,0),1);
  assert.deepEqual(r.dmy.columns.date,['2026-02-01T12:30:00.000Z','2026-02-02T12:30:00.000Z']);assert.equal(r.dmy.meta.invalidXRows,1);assert.deepEqual(r.f.columns.v,[2]);assert.equal(r.preview.rowCount,2);assert.equal(r.summary.totalRows,2);
  assert.deepEqual(r.epoch.columns.date,['1970-01-01T00:00:00.000Z','1970-01-01T00:00:01.000Z']);assert.deepEqual(r.tz.columns.v__d1,[null,1,1]);assert.deepEqual(r.tz.columns.date,['2026-03-29T00:30:00.000+00:00','2026-03-29T02:30:00.000+01:00','2026-03-29T03:30:00.000+01:00']);
  assert.deepEqual(writes,[]);assert.deepEqual(external,[]);console.log('PASS: JSON, derivatives, rolling, histograms, bins, summaries, DMY, prepared axes, epoch, DST, no uploads/external requests');

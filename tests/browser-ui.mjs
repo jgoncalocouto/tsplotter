@@ -60,13 +60,14 @@ try {
   await desktop.goto(baseURL, { waitUntil: 'networkidle' });
   await desktop.screenshot({ path: `${screenshotPrefix}-desktop-welcome.png`, fullPage: true });
   await loadExample(desktop);
-  assert.equal(await desktop.getByRole('tab').count(), 6);
+  assert.equal(await desktop.getByRole('tab').count(), 5);
+  assert.equal(await desktop.getByRole('tab', {name: 'Grouped scatter', exact: true}).count(), 0);
   for (const tab of await desktop.getByRole('tab').all()) assert.ok(await tab.isVisible());
   await desktop.evaluate(() => window.scrollTo(0, 0));
   const chartTop = await desktop.locator('#chart').evaluate(el => el.getBoundingClientRect().top);
   assert.ok(chartTop >= 0 && chartTop < 600, `Desktop chart starts at ${chartTop}px; expected before 600px`);
   await noHorizontalOverflow(desktop);
-  pass('Desktop exposes six chart tabs and starts the chart before 600px at 1440×1000');
+  pass('Desktop exposes five focused chart tabs and starts the chart before 600px at 1440×1000');
 
   await pickerEscape(desktop);
   pass('Signal picker searches actual options; Escape closes it and restores trigger focus without changing data');

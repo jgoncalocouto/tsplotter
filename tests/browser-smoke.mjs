@@ -1,4 +1,4 @@
-/** Run against the locally served build, or BASE_URL=https://…/browser/ . */
+/** Run against the locally served build, or set BASE_URL to its deployed URL. */
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -69,7 +69,9 @@ try {
   if (await page.locator('#x-column option[value="x"]').count()) await page.selectOption('#x-column', 'x');
   await chooseSignals(page, ['signal']);
 
-  for (const mode of ['Trends', 'Distribution', 'Scatter', 'Grouped scatter', 'Rolling window', 'Derivatives']) {
+  assert.equal(await page.getByRole('tab').count(), 5);
+  assert.equal(await page.getByRole('tab', {name: 'Grouped scatter', exact: true}).count(), 0);
+  for (const mode of ['Trends', 'Distribution', 'Scatter', 'Rolling window', 'Derivatives']) {
     await draw(mode);
     const data = await traces();
     if (mode === 'Distribution') {
@@ -89,6 +91,10 @@ try {
   const saved = await readFile(await download.path(), 'utf8');
   const config = JSON.parse(saved);
   assert.equal(config.app, 'tsplotter');
+  assert.equal(config.version, 2);
+  assert.equal(config.settings.plot_type, 'Scatter');
+  assert.equal(config.settings.scatter_panels.length, 1);
+  assert.equal(config.settings.scatter_panels[0].y, 'signal');
   assert.ok(!saved.includes('full-points.csv'), 'Configuration must not include dataset source names');
   assert.ok(saved.length < 256 * 1024, 'Configuration must contain settings rather than dataset rows');
   await draw('Trends');
@@ -135,18 +141,19 @@ try {
   await page.click('#clear-filters');
   await rendered();
   pass('Zero-match filters clear stale charts and recover after clearing filters');
-  await draw('Grouped scatter');
-  await page.selectOption('[data-key="sc2_g1"]', 'aux');
-  await page.selectOption('[data-key="sc2_g2"]', 'aux');
-  await page.selectOption('[data-key="sc2_color_bin_mode"]', 'Number of bins');
-  await page.fill('[data-key="sc2_color_bin_count"]', '5');
-  await page.selectOption('[data-key="sc2_marker_bin_mode"]', 'Bin width');
-  await page.fill('[data-key="sc2_marker_bin_width"]', '25');
+  await draw('Scatter');
+  await page.selectOption('[data-panel-key="color"]', 'aux');
+  await page.selectOption('[data-panel-key="marker"]', 'aux');
+  await page.selectOption('[data-panel-key="colorMode"]', 'discrete');
+  await page.selectOption('[data-panel-key="colorBinMode"]', 'Number of bins');
+  await page.fill('[data-panel-key="colorBinCount"]', '5');
+  await page.selectOption('[data-panel-key="markerBinMode"]', 'Bin width');
+  await page.fill('[data-panel-key="markerBinWidth"]', '25');
   await page.click('#render-button');
   await rendered();
   const groupedRows = (await traces()).filter(trace => trace.type === 'scattergl').reduce((total, trace) => total + trace.length, 0);
   assert.equal(groupedRows, rows, 'Independent color/marker bins retain all rows');
-  pass('Independent numeric color/marker bins on the same source retain all points');
+  pass('Unified Scatter retains all points with independent numeric color/marker bins on the same source');
 
   // A separately generated Parquet fixture verifies the actual browser decoder.
   if (process.env.PARQUET_FIXTURE) {

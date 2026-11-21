@@ -28,7 +28,7 @@ test('literal contains does not treat wildcard characters as regex', () => {
   const sql=buildFilterSQL([{kind:'categorical',column:'group',op:'contains',values:['A_%'],caseSensitive:false}],schema);
   assert.match(sql,/contains\(lower\(CAST\("group"/); assert.match(sql,/'a_%'/); assert.doesNotMatch(sql,/LIKE|regexp/);
 });
-test('membership remains case-sensitive like Python filter',()=>{
+test('membership remains case-sensitive',()=>{
   assert.doesNotMatch(buildFilterSQL([{kind:'categorical',column:'group',op:'is one of',values:['A'],caseSensitive:false}],schema),/lower/);
 });
 test('null-match includes missing values even for negated text filters',()=>{

@@ -2079,6 +2079,37 @@ details[open]>summary:before {
   border-color:#a99ce2;
   box-shadow:0 0 0 3px #6251c610
 }
+
+/* One settings editor, with independent results arranged for comparison. */
+.instance-toolbar { display:flex; gap:12px; justify-content:space-between; align-items:center; flex-wrap:wrap; margin:4px 0 16px; }
+.instance-choices,.instance-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; }
+.instance-choice { border:1px solid #e2e5ee; border-radius:8px; background:#fff; padding:7px 11px; font:inherit; font-size:12px; color:#63708a; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.instance-choice[aria-pressed="true"] { border-color:#a899e0; color:#6251c6; background:#f2effc; }
+.instance-actions .field-help { margin:0 0 0 4px; white-space:nowrap; }
+#plot-grid,.plot-panel { min-width:0; }
+#plot-grid.panel-grid { display:grid; gap:16px; margin-top:12px; }
+.panel-grid .plot-panel { border:1px solid #e4e8f0; border-radius:12px; overflow:hidden; background:#fff; }
+.panel-grid .plot-panel.editing { border-color:#b4a9df; }
+.plot-heading { display:flex; gap:12px; align-items:center; justify-content:space-between; padding:14px 16px 0; min-width:0; }
+.plot-heading>div { min-width:0; }
+.plot-heading h3 { font-size:14px; font-weight:650; margin:0; color:#36435c; overflow-wrap:anywhere; }
+.plot-heading p { font-size:11px; color:#78859a; margin:4px 0 0; overflow-wrap:anywhere; }
+.plot-heading button { white-space:nowrap; flex-shrink:0; }
+.plot-canvas { min-width:0; width:100%; }
+.plot-empty { display:grid; place-items:center; min-height:280px; padding:24px; color:#7a879c; font-size:13px; text-align:center; }
+.panel-grid .chart-footer { padding:8px 14px; flex-wrap:wrap; gap:8px; }
+.panel-grid .bin-panel { margin:0 14px 10px; max-width:calc(100% - 28px); }
+.plot-warnings { font-size:11px; color:#856925; padding:0 14px; overflow-wrap:anywhere; }
+.plot-warnings:not(:empty) { padding-bottom:12px; }
+@media(min-width:1280px) { #plot-grid.panel-grid.multiple { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:780px) {
+ .instance-toolbar { align-items:stretch; gap:10px; }
+ .instance-choices { width:100%; }
+ .instance-actions { width:100%; gap:5px; }
+ .instance-choice { max-width:145px; }
+ .panel-grid .chart-footer { align-items:flex-start; }
+ .plot-heading { padding:12px 12px 0; }
+}
 @media(max-width:780px) {
   .control-panels {
     margin-top:4px;
