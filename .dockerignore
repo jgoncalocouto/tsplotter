@@ -5,3 +5,6 @@ __pycache__
 **/__pycache__
 .spyproject
 artifacts
+
+# The browser app has its own static build and hosting.
+browser/

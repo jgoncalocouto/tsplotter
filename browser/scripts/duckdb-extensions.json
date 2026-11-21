@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "duckdbWasmVersion": "1.30.0",
+  "duckdbEngineVersion": "v1.3.2",
+  "runtimeFiles": [
+    {
+      "name": "duckdb-mvp.wasm",
+      "bytes": 38372638,
+      "sha256": "828ee46ad8cca8d3f50fe47ed3b9415bb6494e776764fa3603711f68676f06ab"
+    },
+    {
+      "name": "duckdb-eh.wasm",
+      "bytes": 33504918,
+      "sha256": "5c11d89272279142ddc69be39d35a4f9b290f859ca1e78a0c41691fc62a87bd5"
+    },
+    {
+      "name": "duckdb-browser-mvp.worker.js",
+      "bytes": 836175,
+      "sha256": "db2845223eb1473ed87a37cab2aefab3484c937e6ab0ad6e5aea1f5a5504e88b"
+    },
+    {
+      "name": "duckdb-browser-eh.worker.js",
+      "bytes": 771557,
+      "sha256": "107f554b8311552239b5cc4d6f2ab9a76a3d62eab588943cafe924cca1cec23f"
+    }
+  ],
+  "extensions": [
+    {
+      "name": "parquet",
+      "platform": "wasm_mvp",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_mvp/parquet.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_mvp/parquet.duckdb_extension.wasm",
+      "bytes": 2675480,
+      "sha256": "dca8262bc69da4210ef609d606b9e88122088b3c31fcd019e54971bfdfc0c555"
+    },
+    {
+      "name": "json",
+      "platform": "wasm_mvp",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_mvp/json.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_mvp/json.duckdb_extension.wasm",
+      "bytes": 697005,
+      "sha256": "b7dc3cd156500c0294284fe56213ad87ce766f036f8758c2a8637f6d323b2857"
+    },
+    {
+      "name": "icu",
+      "platform": "wasm_mvp",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_mvp/icu.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_mvp/icu.duckdb_extension.wasm",
+      "bytes": 6399417,
+      "sha256": "e8d542588569f274b7c51ae8a7e313c8b80f96d89307f368d3356216180e8fbd"
+    },
+    {
+      "name": "parquet",
+      "platform": "wasm_eh",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_eh/parquet.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_eh/parquet.duckdb_extension.wasm",
+      "bytes": 2828142,
+      "sha256": "0cd8dbaeeba5773e82254b2a2ae115d8bac33b67e55b1d5b55308796b5f86ce0"
+    },
+    {
+      "name": "json",
+      "platform": "wasm_eh",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_eh/json.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_eh/json.duckdb_extension.wasm",
+      "bytes": 800712,
+      "sha256": "f61b9cd57183e2e6e601e5846bd8366dbfe85784d5f06dfcf3756d9a03586aed"
+    },
+    {
+      "name": "icu",
+      "platform": "wasm_eh",
+      "path": "extensions/duckdb-wasm/v1.3.2/wasm_eh/icu.duckdb_extension.wasm",
+      "url": "https://extensions.duckdb.org/v1.3.2/wasm_eh/icu.duckdb_extension.wasm",
+      "bytes": 6486380,
+      "sha256": "4d30319b37f2c167c59028b101f3b8d665c68886fbf5c9bea219d9915ffcf501"
+    }
+  ]
+}

@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import tempfile
+import logging
+from hosting_safety import read_parquet_checked, preview_frame, export_allowed
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -67,7 +69,7 @@ st.caption("Explore signals, uncover patterns, and take your findings with you."
 # Cached readers / builders
 # ----------------------------------
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def _read_table_from_bytes(
     name: str, data: bytes, sheet: Optional[str]
 ) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
@@ -114,7 +116,7 @@ def _read_table_from_bytes(
 
     if lname.endswith(".parquet"):
         bio.seek(0)
-        return pd.read_parquet(bio), None
+        return read_parquet_checked(bio), None
 
     if lname.endswith((".xls", ".xlsx")):
         bio.seek(0)
@@ -223,7 +225,7 @@ def _parse_dt_series(
     return dt
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, max_entries=2)
 def _build_prepared_df(
     raw_df: pd.DataFrame,
     time_mode: str,
@@ -327,6 +329,7 @@ if source == "Upload a file":
             df.columns = df.columns.map(str)
             if not df.columns.is_unique:
                 raise ValueError("Column names must be unique. Rename duplicate columns and upload again.")
+            logging.getLogger("plotter.resources").info("dataset_loaded rows=%d columns=%d dataframe_bytes=%d", len(df), len(df.columns), int(df.memory_usage(index=True, deep=True).sum()))
             identity = hashlib.sha256(data).hexdigest() + str(sheet) + up.name
             _set_dataset(df, meta, identity, up.name)
         except Exception as e:
@@ -1524,9 +1527,17 @@ else:
 st.write("")
 with st.expander("Data preview & export", expanded=False):
     st.caption("Filtered rows before any chart-specific sampling or missing-value removal.")
-    st.dataframe(work, use_container_width=True, height=320)
-    st.download_button("Download filtered dataset (CSV)", data=work.to_csv(index=True).encode("utf-8"),
-                       file_name="filtered_dataset.csv", mime="text/csv", key="dataset_download")
+    preview = preview_frame(work)
+    st.dataframe(preview, use_container_width=True, height=320)
+    if preview.shape != work.shape:
+        st.caption(f"Preview: first {len(preview):,} rows and {len(preview.columns):,} columns of {len(work):,} rows and {len(work.columns):,} columns. Charts and statistics still use the full filtered dataset.")
+    if not export_allowed(work):
+        st.info("This dataset is too large for an in-memory CSV export on this server. Filter it to fewer rows or columns first.")
+    elif work.size <= 10_000 or st.button("Prepare full CSV download", key="dataset_prepare_download"):
+        st.download_button("Download filtered dataset (CSV)", data=work.to_csv(index=True).encode("utf-8"),
+                           file_name="filtered_dataset.csv", mime="text/csv", key="dataset_download")
+    else:
+        st.caption("The full CSV is prepared only when requested, to keep memory usage low.")
 with st.expander("Summary statistics", expanded=False):
     ov_cols = st.multiselect("Signals to summarize", options=_overview_numeric,
                             default=_overview_numeric[:6], key="overview_cols")

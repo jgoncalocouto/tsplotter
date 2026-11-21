@@ -1,10 +1,27 @@
 # TSPlotter
 
-A Streamlit workspace for exploring time series with Plotly. Import a dataset, choose a time axis, filter rows, and explore one chart at a time.
+A time-series workspace with a browser application and a retained Streamlit application. Import a dataset, choose a time axis, filter rows, and explore one chart at a time with Plotly.
 
 Start with **Explore example data** to try 720 sensor readings without uploading a file. Supported imports: CSV, TSV, Excel, Parquet, JSON, and MATLAB v7.3 (`.mat`).
 
-## Run locally
+## Browser workspace
+
+The [`browser/`](browser/README.md) application reads files and runs DuckDB-Wasm calculations on the user's computer. It keeps every usable selected point, uses searchable signal controls and six chart views, and supports existing version-1 plotting configurations. Datasets are not uploaded to the website server.
+
+Requires Node.js 20.19 or newer:
+
+```sh
+cd browser
+npm ci
+npm run prepare:assets
+npm run dev
+```
+
+For static hosting, run `npm run build` and serve `browser/dist/`. Dependencies and reader/timezone extensions are pinned and served from the same origin. See the [browser README](browser/README.md) for supported formats, memory limits, rebuild instructions and desktop/mobile verification.
+
+The Python application below remains available for existing workflows and MATLAB layouts that the browser importer cannot read. Updating the Python application does not rebuild the browser application.
+
+## Run Streamlit locally
 
 Requires Python 3.10 or newer. In PowerShell:
 
