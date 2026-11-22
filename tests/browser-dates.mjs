@@ -33,8 +33,13 @@ try {
   await page.selectOption('[data-key="setup_profile"]', 'DMY (dd/mm/yyyy)');
   await chooseSignals(page, 'signal');
   await update();
-  assert.equal(await page.locator('#row-count').textContent(), '3');
-  pass('DMY parsing excludes the invalid timestamp and retains three valid rows');
+  assert.equal(await page.locator('#row-count').textContent(), '4');
+  assert.equal(await page.locator('#filtered-count').textContent(), '0');
+  assert.equal(await page.locator('#invalid-time-count').textContent(), '1');
+  assert.deepEqual(await page.locator('#primary-plot [data-row-ledger]').evaluate(el => JSON.parse(el.dataset.ledger)),
+    {source: 4, matched: 4, filteredOut: 0, invalidTime: 1, usable: 3, excludedValues: 0});
+  assert.deepEqual(await page.locator('#chart').evaluate(el => Array.from(el.data[0].y)), [1, 3, 5]);
+  pass('DMY accounting distinguishes four matched rows, one invalid timestamp and three plotted rows');
 
   await page.locator('#filter-panel > summary').click();
   await page.click('#add-filter');
@@ -43,6 +48,8 @@ try {
   await page.fill('[data-date-bound="up"][data-filter-index="0"]', '2026-02-03T00:00:00');
   await update();
   assert.equal(await page.locator('#row-count').textContent(), '2');
+  assert.deepEqual(await page.locator('#primary-plot [data-row-ledger]').evaluate(el => JSON.parse(el.dataset.ledger)),
+    {source: 4, matched: 2, filteredOut: 2, invalidTime: 0, usable: 2, excludedValues: 0});
   const points = await page.locator('#chart').evaluate(el => Array.from(el.data[0].y));
   assert.deepEqual(points, [3, 5]);
   pass('Inclusive time-index filter retains precisely the two expected points');
@@ -63,13 +70,19 @@ try {
 
   await page.fill('[data-date-bound="low"][data-filter-index="0"]', '2030-01-01T00:00:00');
   await page.fill('[data-date-bound="up"][data-filter-index="0"]', '2030-01-02T00:00:00');
+  await page.click('#preview-button'); await ready();
+  assert.equal(await page.locator('#preview-table tbody tr').count(), 0);
+  assert.ok(await page.locator('#dirty-indicator').isVisible());
+  assert.deepEqual(await page.locator('#chart').evaluate(el => Array.from(el.data[0].y)), [3, 5], 'Preview must not apply pending chart changes');
   await update();
   assert.equal(await page.locator('#row-count').textContent(), '0');
   assert.equal(await page.locator('#chart').evaluate(el => el.data?.length || 0), 0);
   assert.equal(await page.locator('#preview-table tbody tr').count(), 0);
   assert.equal(await page.locator('#summary-table tbody tr').count(), 0);
   await page.click('#clear-filters'); await ready();
-  assert.equal(await page.locator('#row-count').textContent(), '3');
+  assert.equal(await page.locator('#row-count').textContent(), '4');
+  assert.equal(await page.locator('#invalid-time-count').textContent(), '1');
+  assert.deepEqual(await page.locator('#chart').evaluate(el => Array.from(el.data[0].y)), [1, 3, 5]);
   pass('Empty filters clear charts, preview and summary; clearing filters recovers');
 
   await page.setInputFiles('#file-input', { name: 'invalid.mat', mimeType: 'application/octet-stream', buffer: Buffer.from('not a MATLAB file') });

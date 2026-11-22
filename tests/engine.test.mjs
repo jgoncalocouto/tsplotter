@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {quoteIdentifier, quoteValue, columnKind, buildFilterSQL, buildTimeExpression, buildQuerySQL, makeBinEdges, assignBins, binLabel, inDisplayTimezone} from '../src/data-worker.js';
+import {quoteIdentifier, quoteValue, columnKind, buildFilterSQL, buildTimeExpression, buildQuerySQL, buildRowAccountingSQL, makeBinEdges, validateBinEdges, assignBins, binLabel, inDisplayTimezone} from '../src/data-worker.js';
 const schema = [{name:'time',type:'TIMESTAMP',kind:'datetime'}, {name:'sensor "A"',type:'DOUBLE',kind:'numeric'}, {name:'value',type:'DOUBLE',kind:'numeric'}, {name:'group',type:'VARCHAR',kind:'categorical'}];
 
 test('identifiers and values are separately escaped', () => {
@@ -115,4 +115,28 @@ test('display timezone retains instant and uses actual DST offset',()=>{
  assert.equal(summer,'2026-07-01T13:00:00.000+01:00');
  assert.equal(new Date(summer).toISOString(),'2026-07-01T12:00:00.000Z');
  assert.equal(inDisplayTimezone('2026-01-01T12:00:00.000Z','Europe/Lisbon'),'2026-01-01T12:00:00.000+00:00');
+});
+
+test('explicit bin edges retain global intervals while assigning only selected observations',()=>{
+ const edges=[0,5,10],before=[...edges],grouped=assignBins([3,6,10],{edges});
+ assert.deepEqual(grouped.labels,['[0, 5)','[5, 10]']);assert.deepEqual(grouped.groups,['[0, 5)','[5, 10]','[5, 10]']);assert.deepEqual(grouped.counts,[1,2]);
+ assert.deepEqual(edges,before);grouped.edges[0]=-1;assert.deepEqual(edges,before);
+ const empty=assignBins([],{edges});assert.deepEqual(empty.counts,[0,0]);assert.deepEqual(empty.groups,[]);
+ assert.throws(()=>assignBins([-1,2],{edges}),/cover every finite selected value/);assert.throws(()=>assignBins([11],{edges}),/cover every finite selected value/);
+});
+
+test('explicit bin boundaries reject invalid or excessive intervals and preserve constants',()=>{
+ assert.deepEqual(validateBinEdges([4,4]),[4,4]);assert.deepEqual(assignBins([4,4],{edges:[4,4]}).counts,[2]);
+ for(const edges of [[],[1],[0,0,1],[2,1],[0,NaN],[0,Infinity],['0',1]])assert.throws(()=>validateBinEdges(edges));
+ assert.throws(()=>validateBinEdges([0,1,2],1),/finite bin edges/);
+});
+
+test('row accounting separates global matching, time preparation, and selected-value conditions',()=>{
+ const spec={mode:'trends',x:'time',y:['value','sensor "A"'],preparedAxis:{x:'time',timeAxis:{profile:'Auto-detect'}},filters:[{kind:'numeric',column:'value',low:2}]};
+ const sql=buildRowAccountingSQL(spec,schema);
+ assert.match(sql,/AS matched/);assert.match(sql,/AS eligible/);assert.match(sql,/AS usable/);assert.match(sql,/AS series_0/);assert.match(sql,/AS series_1/);
+ assert.match(sql,/isfinite\(TRY_CAST\("value" AS DOUBLE\)\).* OR /);
+ const matched=sql.match(/SELECT (.*?) AS matched/)[1];assert.doesNotMatch(matched,/TIMESTAMPTZ|IS NOT NULL/);
+ assert.match(sql,/TRY_CAST\("time" AS TIMESTAMPTZ\) IS NOT NULL/);
+ assert.throws(()=>buildRowAccountingSQL({...spec,y:['missing']},schema),/not in this dataset/);
 });

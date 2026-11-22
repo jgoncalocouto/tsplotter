@@ -1,6 +1,6 @@
 /** Portable TSPlotter settings. Dataset bytes and browser file handles are never saved. */
 export const CONFIG_APP = 'tsplotter';
-export const CONFIG_VERSION = 2;
+export const CONFIG_VERSION = 3;
 export const MAX_CONFIG_BYTES = 256 * 1024;
 export const ROW_INDEX = '(row number 0..N-1)';
 export const TIME_INDEX = '(use existing time index)';
@@ -11,6 +11,8 @@ export const BIN_MODES = ['Individual values', 'Number of bins', 'Bin width'];
 export const PLOT_TYPES = ['Trends', 'Distribution', 'Scatter', 'Rolling window', 'Derivatives'];
 export const MAX_SCATTER_PANELS = 6;
 export const MAX_DISTRIBUTION_PANELS = 6;
+export const MAX_ANALYSIS_PANELS = 6;
+export const BIN_SCOPES = ['Filtered data', 'Full dataset'];
 export const COLORMAPS = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Turbo', 'Blues', 'Greens', 'Greys', 'Oranges', 'Purples', 'Reds'];
 export const MARKER_PRESETS = ['Core Shapes', 'Crosshair Set', 'Directional', 'Starburst', 'Minimal Dots'];
 const enumSpec = (...choices) => ({kind: 'string', choices});
@@ -23,6 +25,8 @@ const specs = {
   plot_type: enumSpec(...PLOT_TYPES, 'Grouped scatter'), overview_cols: strings,
   scatter_panels: {kind: 'scatter-panels'},
   distribution_panels: {kind: 'distribution-panels'},
+  trend_panels: {kind: 'analysis-panels'}, rolling_panels: {kind: 'analysis-panels'}, derivative_panels: {kind: 'analysis-panels'},
+  comparison_link_x: bool, comparison_link_y: bool, distribution_shared_bins: bool,
   setup_time_mode: enumSpec('Absolute time', 'Relative time'), setup_index: text, setup_dt_col: text,
   setup_profile: enumSpec('Auto-detect', 'DMY (dd/mm/yyyy)', 'MDY (mm/dd/yyyy)', 'YMD (yyyy-mm-dd)', 'Unix epoch (seconds)', 'Unix epoch (milliseconds)', 'Custom strptime'),
   setup_format: text, setup_tz_mode: enumSpec('Treat as naive (no tz)', 'Assume timezone and localize', 'Input already has timezone'),
@@ -51,23 +55,101 @@ const dynamicSpecs = [
   [/^flt2_use_(?:low|up)dt_(?:idx|col)_[0-9]$/, bool], [/^flt2_(?:low|up)_date_(?:idx|col)_[0-9]$/, {kind: 'date'}], [/^flt2_(?:low|up)_time_(?:idx|col)_[0-9]$/, {kind: 'time'}],
   [/^flt2_(?:low|up)_num_[0-9]$/, text], [/^flt2_op_[0-9]$/, enumSpec('is one of', 'is not one of', 'contains', 'not contains', 'starts with', 'ends with', 'regex')], [/^flt2_vals_[0-9]$/, strings], [/^flt2_(?:vals_csv|patt)_[0-9]$/, text], [/^flt2_(?:case|na)_[0-9]$/, bool],
 ];
-const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isObject = value => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const panelSpecs = {
   title: {...text, maxLength: 80}, x: text, y: text, color: text, marker: text,
   colorMode: enumSpec('auto', 'continuous', 'discrete'),
   colorBinMode: enumSpec(...BIN_MODES), colorBinCount: int(1, 100), colorBinWidth: number(0, undefined, true),
   markerBinMode: enumSpec(...BIN_MODES), markerBinCount: int(1, 100), markerBinWidth: number(0, undefined, true),
+  colorBinScope: enumSpec(...BIN_SCOPES), markerBinScope: enumSpec(...BIN_SCOPES),
   palette: enumSpec(...PALETTES), colormap: enumSpec(...COLORMAPS), markerPreset: enumSpec(...MARKER_PRESETS),
   customSymbols: text, size: int(3, 20), opacity: number(.2, 1),
 };
 const distributionPanelSpecs = {
   title: {...text, maxLength: 80}, columns: strings,
   binMode: enumSpec('Auto (width)', 'Fixed width', 'Target #bins'), binCount: int(10, 200), binWidth: number(1e-12),
+  binScope: enumSpec(...BIN_SCOPES),
 };
+const trendPanelSpecs = {
+  title: {...text, maxLength: 80}, columns: strings, shape: specs.mlc_shape, width: specs.mlc_width, ytype: specs.mlc_ytype,
+  markers: bool, rangeslider: bool, unified: bool, spikes: bool,
+};
+const rollingPanelSpecs = {
+  title: {...text, maxLength: 80}, y: text, window: specs.rw_window, includeCurrent: bool, requireFull: bool, band: bool,
+  unified: bool, rangeslider: bool, spikes: bool, size: specs.rw_msize, opacity: specs.rw_mop,
+};
+const derivativePanelSpecs = {
+  title: {...text, maxLength: 80}, y: text, timeUnit: specs.der_tunit, xMode: specs.der_xmode, smoothWindow: specs.der_smooth,
+  markers: bool, width: specs.der_lw, unified: bool, rangeslider: bool, spikes: bool,
+};
+const numericColumns = schema => schemaColumns(schema).filter(column => columnKind(column) === 'numeric').map(column => column.name);
+const hasTimeColumn = schema => schemaColumns(schema).some(column => columnKind(column) === 'datetime');
+
+export function defaultTrendPanel(schema = {}, index = 0) {
+  const numeric = numericColumns(schema), first = numeric[index] || numeric[0];
+  return {title: `Trends ${index + 1}`, columns: first ? [first] : [], shape: 'linear', width: 2, ytype: 'linear', markers: false, rangeslider: true, unified: true, spikes: true};
+}
+export function defaultRollingPanel(schema = {}, index = 0) {
+  return {title: `Rolling window ${index + 1}`, y: numericColumns(schema)[0] || '', window: 50, includeCurrent: true, requireFull: false, band: true, unified: true, rangeslider: hasTimeColumn(schema), spikes: true, size: 7, opacity: .7};
+}
+export function defaultDerivativePanel(schema = {}, index = 0) {
+  return {title: `Derivatives ${index + 1}`, y: numericColumns(schema)[0] || '', timeUnit: 'seconds', xMode: 'index step (1)', smoothWindow: 1, markers: true, width: 2, unified: true, rangeslider: hasTimeColumn(schema), spikes: true};
+}
+
+const trendLegacyFields = {shape: 'mlc_shape', width: 'mlc_width', ytype: 'mlc_ytype', markers: 'mlc_markers', rangeslider: 'mlc_rangeslider', unified: 'mlc_unified', spikes: 'mlc_spikes'};
+const rollingLegacyFields = {y: 'rw_y', window: 'rw_window', includeCurrent: 'rw_include_current', requireFull: 'rw_full', band: 'rw_band', unified: 'rw_unified', rangeslider: 'rw_rangeslider', spikes: 'rw_spikes', size: 'rw_msize', opacity: 'rw_mop'};
+const derivativeLegacyFields = {y: 'der_y', timeUnit: 'der_tunit', xMode: 'der_xmode', smoothWindow: 'der_smooth', markers: 'der_markers', width: 'der_lw', unified: 'der_unified', rangeslider: 'der_rangeslider', spikes: 'der_spikes'};
+function mappedLegacyPanel(settings, defaults, fields) {
+  return {...defaults, ...Object.fromEntries(Object.entries(fields).filter(([, key]) => settings[key] !== undefined).map(([field, key]) => [field, settings[key]]))};
+}
+function copyAnalysisPanels(panels, schema, create) {
+  return panels.map((panel, index) => {
+    const next = {...create(schema, index), ...panel};
+    if (Array.isArray(next.columns)) next.columns = [...next.columns];
+    return next;
+  });
+}
+export function trendPanels(settings = {}, schema = {}) {
+  if (Array.isArray(settings.trend_panels)) return copyAnalysisPanels(settings.trend_panels, schema, defaultTrendPanel);
+  const indices = Object.keys(settings).flatMap(key => /^mlc_cols_([0-5])$/.test(key) ? [Number(key.slice(-1))] : []);
+  const count = settings.mlc_n_subplots ?? (indices.length ? Math.max(...indices) + 1 : 1);
+  return Array.from({length: count}, (_, index) => {
+    const panel = mappedLegacyPanel(settings, defaultTrendPanel(schema, index), trendLegacyFields);
+    panel.columns = [...(settings[`mlc_cols_${index}`] ?? panel.columns)];
+    return panel;
+  });
+}
+export function rollingPanels(settings = {}, schema = {}) {
+  if (Array.isArray(settings.rolling_panels)) return copyAnalysisPanels(settings.rolling_panels, schema, defaultRollingPanel);
+  return [mappedLegacyPanel(settings, defaultRollingPanel(schema), rollingLegacyFields)];
+}
+export function derivativePanels(settings = {}, schema = {}) {
+  if (Array.isArray(settings.derivative_panels)) return copyAnalysisPanels(settings.derivative_panels, schema, defaultDerivativePanel);
+  return [mappedLegacyPanel(settings, defaultDerivativePanel(schema), derivativeLegacyFields)];
+}
+
+const analysisPanelDefinitions = {
+  trend_panels: {label: 'Trends', fields: trendPanelSpecs, create: defaultTrendPanel, read: trendPanels, prefix: 'mlc'},
+  rolling_panels: {label: 'Rolling window', fields: rollingPanelSpecs, create: defaultRollingPanel, read: rollingPanels, prefix: 'rw'},
+  derivative_panels: {label: 'Derivatives', fields: derivativePanelSpecs, create: defaultDerivativePanel, read: derivativePanels, prefix: 'der'},
+};
+function validateAnalysisPanels(key, value, warnings) {
+  const definition = analysisPanelDefinitions[key];
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_ANALYSIS_PANELS) throw new Error(`Invalid setting '${key}': use between 1 and ${MAX_ANALYSIS_PANELS} ${definition.label.toLowerCase()} panels.`);
+  return value.map((panel, index) => {
+    if (!isObject(panel)) throw new Error(`Invalid setting '${key}[${index}]': expected a settings object.`);
+    const clean = {};
+    for (const [field, value] of Object.entries(panel)) {
+      if (!Object.hasOwn(definition.fields, field)) warnings.push(`Ignored unsupported setting: ${key}[${index}].${field.slice(0, 100)}.`);
+      else clean[field] = validateValue(`${key}[${index}].${field}`, value, definition.fields[field]);
+    }
+    return {...definition.create({}, index), ...clean};
+  });
+}
 
 export function defaultDistributionPanel(schema = {}, index = 0) {
   const numeric = schemaColumns(schema).filter(column => columnKind(column) === 'numeric').map(column => column.name);
-  return {title: `Distribution ${index + 1}`, columns: numeric.slice(0, 1), binMode: 'Auto (width)', binCount: 50, binWidth: 1};
+  return {title: `Distribution ${index + 1}`, columns: numeric.slice(0, 1), binMode: 'Auto (width)', binCount: 50, binWidth: 1, binScope: 'Filtered data'};
 }
 
 function legacyDistributionPanel(settings, schema) {
@@ -112,6 +194,7 @@ export function defaultScatterPanel(schema = {}, index = 0) {
     color: '(none)', marker: '(none)', colorMode: 'auto',
     colorBinMode: 'Individual values', colorBinCount: 5, colorBinWidth: 1,
     markerBinMode: 'Individual values', markerBinCount: 5, markerBinWidth: 1,
+    colorBinScope: 'Filtered data', markerBinScope: 'Filtered data',
     palette: 'Plotly', colormap: 'Viridis', markerPreset: 'Core Shapes', customSymbols: '', size: 7, opacity: .7,
   };
 }
@@ -218,10 +301,14 @@ export function validateSettings(settings) {
     if (!spec) warnings.push(`Ignored unsupported setting: ${key.slice(0, 100)}.`);
     else if (spec.kind === 'scatter-panels') clean[key] = validateScatterPanels(value, warnings);
     else if (spec.kind === 'distribution-panels') clean[key] = validateDistributionPanels(value, warnings);
+    else if (spec.kind === 'analysis-panels') clean[key] = validateAnalysisPanels(key, value, warnings);
     else clean[key] = validateValue(key, value, spec);
   }
   if (!Object.hasOwn(clean, 'scatter_panels') && (hasLegacyScatterSettings(clean, 'sc') || hasLegacyScatterSettings(clean, 'sc2'))) clean.scatter_panels = legacyScatterPanels(clean);
   if (!Object.hasOwn(clean, 'distribution_panels') && Object.keys(clean).some(key => key.startsWith('hist_'))) clean.distribution_panels = [legacyDistributionPanel(clean)];
+  for (const [key, definition] of Object.entries(analysisPanelDefinitions)) {
+    if (!Object.hasOwn(clean, key) && Object.keys(clean).some(field => field.startsWith(`${definition.prefix}_`) && field !== `${definition.prefix}_maxpts`)) clean[key] = definition.read(clean);
+  }
   if (clean.plot_type === 'Grouped scatter') clean.plot_type = 'Scatter';
   return {settings: clean, warnings};
 }
@@ -285,37 +372,43 @@ export function decodeConfig(data) {
   catch (error) {throw new Error(`Could not read configuration: ${error.message}`);}
   if (!isObject(document)) throw new Error('A configuration must be a JSON object.');
   if (document.app !== CONFIG_APP) throw new Error('This file is not a TSPlotter configuration.');
-  if (![1, CONFIG_VERSION].includes(document.version)) throw new Error(`Unsupported configuration version. This app supports versions 1 and ${CONFIG_VERSION}.`);
+  if (![1, 2, CONFIG_VERSION].includes(document.version)) throw new Error(`Unsupported configuration version. This app supports versions 1, 2 and ${CONFIG_VERSION}.`);
   if (!Object.hasOwn(document, 'settings')) throw new Error('The configuration is missing its settings object.');
   return validateSettings(document.settings);
 }
 export function encodeConfig(state) {
   const snapshot = Object.fromEntries(Object.entries(state).filter(([key]) => isConfigKey(key)));
-  if (Array.isArray(snapshot.distribution_panels)) snapshot.distribution_panels = snapshot.distribution_panels.map(panel => {
+  const keepBinValue = (object, key, spec, active) => {
+    if (active || !Object.hasOwn(object, key)) return;
+    try {validateValue(key, object[key], spec);} catch {delete object[key];}
+  };
+  if (Array.isArray(snapshot.distribution_panels)) snapshot.distribution_panels = snapshot.distribution_panels.map((panel, index) => {
     if (!isObject(panel)) return panel;
     const clean = {...panel};
-    if (clean.binMode !== 'Fixed width') delete clean.binWidth;
-    if (clean.binMode !== 'Target #bins') delete clean.binCount;
+    const sharedFollower = snapshot.distribution_shared_bins === true && index > 0;
+    keepBinValue(clean, 'binWidth', distributionPanelSpecs.binWidth, !sharedFollower && clean.binMode === 'Fixed width');
+    keepBinValue(clean, 'binCount', distributionPanelSpecs.binCount, !sharedFollower && clean.binMode === 'Target #bins');
     return clean;
   });
   if (Array.isArray(snapshot.scatter_panels)) snapshot.scatter_panels = snapshot.scatter_panels.map(panel => {
     if (!isObject(panel)) return panel;
     const clean = {...panel};
     for (const prefix of ['color', 'marker']) {
-      if (clean[`${prefix}BinMode`] !== 'Bin width') delete clean[`${prefix}BinWidth`];
-      if (clean[`${prefix}BinMode`] !== 'Number of bins') delete clean[`${prefix}BinCount`];
+      const grouping = Boolean(clean[prefix] && clean[prefix] !== '(none)');
+      keepBinValue(clean, `${prefix}BinWidth`, panelSpecs[`${prefix}BinWidth`], grouping && clean[`${prefix}BinMode`] === 'Bin width');
+      keepBinValue(clean, `${prefix}BinCount`, panelSpecs[`${prefix}BinCount`], grouping && clean[`${prefix}BinMode`] === 'Number of bins');
     }
     return clean;
   });
-  // Old inactive bin widths may legitimately be zero; do not export unused controls.
+  // Retain valid preferences for every mode, while ignoring unfinished unused inputs.
   for (const prefix of ['sc_color', 'sc2_color', 'sc2_marker']) {
-    if (snapshot[`${prefix}_bin_mode`] !== 'Bin width') delete snapshot[`${prefix}_bin_width`];
-    if (snapshot[`${prefix}_bin_mode`] !== 'Number of bins') delete snapshot[`${prefix}_bin_count`];
+    keepBinValue(snapshot, `${prefix}_bin_width`, specs[`${prefix}_bin_width`], !snapshot.scatter_panels && snapshot[`${prefix}_bin_mode`] === 'Bin width');
+    keepBinValue(snapshot, `${prefix}_bin_count`, specs[`${prefix}_bin_count`], !snapshot.scatter_panels && snapshot[`${prefix}_bin_mode`] === 'Number of bins');
   }
-  if (snapshot.hist_binmode !== 'Fixed width') delete snapshot.hist_width_input;
-  if (snapshot.hist_binmode !== 'Target #bins') delete snapshot.hist_bins_main;
+  keepBinValue(snapshot, 'hist_width_input', specs.hist_width_input, !snapshot.distribution_panels && snapshot.hist_binmode === 'Fixed width');
+  keepBinValue(snapshot, 'hist_bins_main', specs.hist_bins_main, !snapshot.distribution_panels && snapshot.hist_binmode === 'Target #bins');
   const {settings} = validateSettings(snapshot);
-  const json = JSON.stringify({app: CONFIG_APP, version: settings.scatter_panels || settings.distribution_panels ? CONFIG_VERSION : 1, settings}, null, 2);
+  const json = JSON.stringify({app: CONFIG_APP, version: CONFIG_VERSION, settings}, null, 2);
   if (new TextEncoder().encode(json).length > MAX_CONFIG_BYTES) throw new Error('This configuration is too large. Save fewer selected values.');
   return json;
 }
@@ -361,6 +454,23 @@ export function normalizeConfiguration(settings, schema) {
     if (missing.length) warnings.push(`Distribution ${index + 1}: unavailable numeric columns were skipped: ${missing.join(', ')}.${needsDefault && selected.length ? ' The first numeric signal is selected.' : ''}`);
     return {...panel, columns: selected};
   });
+  for (const [key, definition] of Object.entries(analysisPanelDefinitions)) {
+    if (!clean[key]) continue;
+    clean[key] = clean[key].map((panel, index) => {
+      const defaults = definition.create(schema, index);
+      if (key === 'trend_panels') {
+        const missing = panel.columns.filter(name => !numeric.has(name));
+        const selected = panel.columns.filter(name => numeric.has(name));
+        if (missing.length) warnings.push(`Trends ${index + 1}: unavailable numeric columns were skipped: ${missing.join(', ')}.${!selected.length && defaults.columns.length ? ' A default signal is selected.' : ''}`);
+        return {...panel, columns: selected.length ? selected : defaults.columns};
+      }
+      if (!numeric.has(panel.y)) {
+        if (panel.y) warnings.push(`${definition.label} ${index + 1}: saved signal '${panel.y}' is unavailable or nonnumeric. A default signal is selected.`);
+        return {...panel, y: defaults.y};
+      }
+      return {...panel};
+    });
+  }
   for (const [prefix, selector] of [['sc_color', 'sc_group'], ['sc2_color', 'sc2_g1'], ['sc2_marker', 'sc2_g2']]) {
     // No grouping is an intentional selection. Keep its inactive controls for later use.
     if (clean[selector] === '(none)' || numeric.has(clean[selector])) continue;
@@ -467,6 +577,8 @@ export function defaultSettings(schema = {}) {
     plot_type: 'Trends', overview_cols: numeric.slice(0, 4),
     scatter_panels: [defaultScatterPanel(schema)],
     distribution_panels: [defaultDistributionPanel(schema)],
+    trend_panels: [defaultTrendPanel(schema)], rolling_panels: [defaultRollingPanel(schema)], derivative_panels: [defaultDerivativePanel(schema)],
+    comparison_link_x: false, comparison_link_y: false, distribution_shared_bins: false,
     setup_time_mode: time ? 'Absolute time' : 'Relative time', setup_index: ROW_INDEX, setup_dt_col: time || '', setup_profile: 'Auto-detect', setup_format: '', setup_tz_mode: 'Treat as naive (no tz)', setup_assume_tz: 'UTC', setup_out_tz: '(keep)', setup_custom_tz: '', setup_target_tz: '',
     mlc_n_subplots: 1, ...Object.fromEntries(Array.from({length: 6}, (_, i) => [`mlc_cols_${i}`, numeric[i] ? [numeric[i]] : []])), mlc_shape: 'linear', mlc_width: 2, mlc_ytype: 'linear', mlc_markers: false, mlc_rangeslider: true, mlc_unified: true, mlc_spikes: true,
     hist_cols_main: numeric.slice(0, 1), hist_binmode: 'Auto (width)', hist_width_input: 1, hist_bins_main: 50,

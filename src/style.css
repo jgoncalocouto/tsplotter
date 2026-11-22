@@ -2090,6 +2090,7 @@ details[open]>summary:before {
 #plot-grid.panel-grid { display:grid; gap:16px; margin-top:12px; }
 .panel-grid .plot-panel { border:1px solid #e4e8f0; border-radius:12px; overflow:hidden; background:#fff; }
 .panel-grid .plot-panel.editing { border-color:#b4a9df; }
+.panel-grid:not(.multiple) .plot-heading { display:none; }
 .plot-heading { display:flex; gap:12px; align-items:center; justify-content:space-between; padding:14px 16px 0; min-width:0; }
 .plot-heading>div { min-width:0; }
 .plot-heading h3 { font-size:14px; font-weight:650; margin:0; color:#36435c; overflow-wrap:anywhere; }
@@ -2101,6 +2102,23 @@ details[open]>summary:before {
 .panel-grid .bin-panel { margin:0 14px 10px; max-width:calc(100% - 28px); }
 .plot-warnings { font-size:11px; color:#856925; padding:0 14px; overflow-wrap:anywhere; }
 .plot-warnings:not(:empty) { padding-bottom:12px; }
+.settings-indicator { font-size:11px; line-height:1.5; margin:12px 0 3px; color:#7a879b; }
+.settings-indicator[data-unsaved="true"] { color:#8b6c27; }
+.comparison-panel { margin:10px 0 14px; color:#738096; font-size:11px; }
+.comparison-panel>summary { cursor:pointer; padding:6px 0; }
+#comparison-options { display:flex; gap:12px 20px; flex-wrap:wrap; padding:10px 12px; border:1px solid #e8ebf3; border-radius:8px; }
+#comparison-options .field-help { flex-basis:100%; margin:0; }
+.row-ledger { font-size:10px; color:#758298; margin:0 14px 12px; }
+.row-ledger>summary { cursor:pointer; line-height:1.6; }
+.row-ledger>div { white-space:pre-line; line-height:1.7; padding:8px 0 0; }
+.stats .stat:last-child { border-right:0; }
+@media(max-width:780px) {
+ .stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px 0; }
+ .stats .stat { min-width:0; }
+ .stats .stat small { white-space:normal; }
+ .stats .stat:nth-child(3) { border-right:0; }
+ #comparison-options { flex-direction:column; gap:10px; }
+}
 @media(min-width:1280px) { #plot-grid.panel-grid.multiple { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:780px) {
  .instance-toolbar { align-items:stretch; gap:10px; }

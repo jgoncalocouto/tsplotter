@@ -4,6 +4,7 @@ const TABLE = 'plotter_source';
 let internalRow = '__plotter_internal_row__';
 let database, connection, databaseWorker, sourceMeta;
 const loadedExtensions = new Set();
+const categoryDomainCache = new Map();
 const NUMERIC = /^(U?TINYINT|U?SMALLINT|U?INTEGER|U?BIGINT|HUGEINT|UHUGEINT|FLOAT|DOUBLE|DECIMAL|REAL|INT\d*|UINT\d*)/i;
 const DATETIME = /^(TIMESTAMP|DATE|TIME)/i;
 
@@ -145,6 +146,45 @@ function baseSQL(spec, columns, rowColumn) {
   return {xName, xExpr, where, filterWhere, preparedExpr};
 }
 
+/** Count source rows once at each exclusion stage; retained gaps are not points. */
+export function buildRowAccountingSQL(spec, columns, rowColumn = internalRow) {
+  const {where, filterWhere, xName, xExpr} = baseSQL(spec, columns, rowColumn);
+  const y = selectedColumns(spec, columns), mode = spec.mode || 'trends';
+  const axisKind = xName === ROW_COLUMN ? 'numeric' : columns.find(column => column.name === xName)?.kind;
+  const axisValid = axisKind === 'numeric' ? finite(`TRY_CAST(${xExpr} AS DOUBLE)`) : `${xExpr} IS NOT NULL`;
+  const needsAxis = !['distribution', 'summary', 'preview', 'export'].includes(mode);
+  const series = y.map(name => `${needsAxis ? `(${axisValid}) AND ` : ''}${finite(numericField(name, columns, rowColumn))}`);
+  let usable = series.length ? `(${series.join(' OR ')})` : 'FALSE';
+  if (['scatter', 'grouped-scatter', 'grouped scatter'].includes(mode)) {
+    const names = [...new Set([xName, ...y, spec.color, spec.marker].filter(Boolean))];
+    usable = names.map(name => {
+      const expression = name === xName ? xExpr : field(name, columns, rowColumn);
+      const kind = name === ROW_COLUMN ? 'numeric' : columns.find(column => column.name === name)?.kind;
+      return kind === 'numeric' ? finite(`TRY_CAST(${expression} AS DOUBLE)`) : `${expression} IS NOT NULL`;
+    }).join(' AND ');
+    series.fill(usable);
+  }
+  if (['preview', 'export'].includes(mode)) usable = 'TRUE';
+  const count = (condition, name) => `count(*) FILTER (WHERE ${condition}) AS ${name}`;
+  return `SELECT ${[
+    count(filterWhere, 'matched'), count(where, 'eligible'), count(`(${where}) AND (${usable})`, 'usable'),
+    ...series.map((condition, index) => count(`(${where}) AND (${condition})`, `series_${index}`)),
+  ].join(', ')} FROM ${TABLE}`;
+}
+
+async function rowAccounting(spec) {
+  const y = selectedColumns(spec, sourceMeta.columns);
+  const counts = await queryColumns(buildRowAccountingSQL(spec, sourceMeta.columns));
+  const matched = Number(counts.matched[0]), eligible = Number(counts.eligible[0]), usable = Number(counts.usable[0]);
+  const rows = {source: sourceMeta.rowCount, matched, filteredOut: sourceMeta.rowCount - matched,
+    invalidTime: matched - eligible, usable, excludedValues: eligible - usable};
+  const seriesCounts = Object.fromEntries(y.map((name, index) => {
+    const count = Number(counts[`series_${index}`][0]);
+    return [name, {usable: count, excludedValues: eligible - count}];
+  }));
+  return {rows, seriesCounts, totalRows: eligible};
+}
+
 /** Build complete chart queries. LIMIT appears only in explicitly requested preview mode. */
 export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
   const mode = spec.mode ?? 'trends';
@@ -178,11 +218,13 @@ export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
     const minCount = spec.requireFull ? window : 1;
     const frame = spec.includeCurrent === false ? `ROWS BETWEEN ${window} PRECEDING AND 1 PRECEDING` : `ROWS BETWEEN ${window - 1} PRECEDING AND CURRENT ROW`;
     const over = `(ORDER BY ${order} ${frame})`;
-    const rolls = ['min', 'mean', 'max'].map(stat => `CASE WHEN count(${value}) OVER ${over} >= ${minCount} THEN ${stat === 'mean' ? 'avg' : stat}(${value}) OVER ${over} END AS ${quoteIdentifier(`${signal}__roll_${stat}`)}`);
+    const validValue = `CASE WHEN ${finite(value)} THEN ${value} END`;
+    const rolls = ['min', 'mean', 'max'].map(stat => `CASE WHEN count(${validValue}) OVER ${over} >= ${minCount} THEN ${stat === 'mean' ? 'avg' : stat}(${validValue}) OVER ${over} END AS ${quoteIdentifier(`${signal}__roll_${stat}`)}`);
     return `SELECT ${[xProjection, `${value} AS ${quoteIdentifier(signal)}`, ...rolls].join(', ')} FROM ${TABLE} WHERE ${where} AND ${xExpr} IS NOT NULL ORDER BY ${order}`;
   }
   if (mode === 'derivatives') {
     const xKind = columns.find(c => c.name === xName)?.kind;
+    const validAxis = xName === ROW_COLUMN || xKind === 'numeric' ? finite(`TRY_CAST(${xExpr} AS DOUBLE)`) : `${xExpr} IS NOT NULL`;
     const datetime = xKind === 'datetime' || Boolean(spec.timeAxis && Object.keys(spec.timeAxis).length && !['relative', 'preserve', 'raw', 'none'].includes(spec.timeAxis.profile));
     const unit = spec.derivativeUnit ?? 'sample';
     const divisors = {seconds: 1, minutes: 60, hours: 3600, days: 86400};
@@ -197,7 +239,7 @@ export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
     const orderDerived = 'ORDER BY __order';
     const result1 = smooth > 1 ? `CASE WHEN __order > 1 THEN avg(d1) OVER (${orderDerived} ROWS BETWEEN ${smooth - 1} PRECEDING AND CURRENT ROW) END` : 'd1';
     const result2 = smooth > 1 ? `CASE WHEN __order > 2 THEN avg(d2) OVER (${orderDerived} ROWS BETWEEN ${smooth - 1} PRECEDING AND CURRENT ROW) END` : 'd2';
-    return `WITH base AS (SELECT ${xExpr} AS x, ${value} AS v, ${spacing} AS dx, row_number() OVER (ORDER BY ${order}) AS __order FROM ${TABLE} WHERE ${where} AND ${xExpr} IS NOT NULL AND ${finite(value)}), first_derivative AS (SELECT *, ${d1Expr} AS d1 FROM base WINDOW w AS (${orderDerived})), second_derivative AS (SELECT *, ${d2Expr} AS d2 FROM first_derivative WINDOW w AS (${orderDerived})) SELECT x AS ${quoteIdentifier(xName)}, v AS ${quoteIdentifier(signal)}, ${result1} AS ${d1Name}, ${result2} AS ${d2Name} FROM second_derivative ORDER BY __order`;
+    return `WITH base AS (SELECT ${xExpr} AS x, ${value} AS v, ${spacing} AS dx, row_number() OVER (ORDER BY ${order}) AS __order FROM ${TABLE} WHERE ${where} AND ${validAxis} AND ${finite(value)}), first_derivative AS (SELECT *, ${d1Expr} AS d1 FROM base WINDOW w AS (${orderDerived})), second_derivative AS (SELECT *, ${d2Expr} AS d2 FROM first_derivative WINDOW w AS (${orderDerived})) SELECT x AS ${quoteIdentifier(xName)}, v AS ${quoteIdentifier(signal)}, ${result1} AS ${d1Name}, ${result2} AS ${d2Name} FROM second_derivative ORDER BY __order`;
   }
   throw new Error(`Unknown chart mode: ${mode}`);
 }
@@ -239,13 +281,22 @@ export function binLabel(edges, index) {
   if (edges[0] === edges[edges.length - 1]) return String(edges[0]);
   return `[${edges[index]}, ${edges[index + 1]}${index === edges.length - 2 ? ']' : ')'}`;
 }
+export function validateBinEdges(edges, maxBins = 10000) {
+  if (!Array.isArray(edges) && !ArrayBuffer.isView(edges)) throw new Error('Bin edges must be an array of finite numbers.');
+  const result = Array.from(edges);
+  if (result.length < 2 || result.length - 1 > maxBins || result.some(value => typeof value !== 'number' || !Number.isFinite(value))) throw new Error(`Provide between 2 and ${maxBins + 1} finite bin edges.`);
+  const constant = result.length === 2 && result[0] === result[1];
+  if (!constant && result.some((value, index) => index && value <= result[index - 1])) throw new Error('Bin edges must increase strictly.');
+  return result;
+}
 export function assignBins(values, settings = {}) {
   const valid = values.filter(value => typeof value === 'number' && Number.isFinite(value));
-  if (!valid.length) throw new Error('This grouping column has no finite numbers.');
+  if (!valid.length && !settings.edges) throw new Error('This grouping column has no finite numbers.');
   if (valid.some(value => Number.isInteger(value) && !Number.isSafeInteger(value))) throw new Error('These integer values are too large to bin accurately. Scale the column first.');
   let low = Infinity, high = -Infinity;
   for (const value of valid) { low = Math.min(low, value); high = Math.max(high, value); }
-  const edges = makeBinEdges(low, high, settings);
+  const edges = settings.edges ? validateBinEdges(settings.edges, settings.maxBins ?? 100) : makeBinEdges(low, high, settings);
+  if (valid.length && (low < edges[0] || high > edges.at(-1))) throw new Error('Bin edges must cover every finite selected value.');
   const labels = edges.slice(1).map((_, index) => binLabel(edges, index));
   const counts = labels.map(() => 0);
   const groups = values.map(value => {
@@ -310,6 +361,16 @@ function tableColumns(table) {
 }
 async function queryColumns(sql) { return tableColumns(await connection.query(sql)); }
 async function queryScalar(sql) { const table = await connection.query(sql); return scalar(table.get(0)?.[table.schema.fields[0].name]); }
+async function categoryDomain(source) {
+  if (!categoryDomainCache.has(source)) {
+    const value = field(source, sourceMeta.columns);
+    const numeric = sourceMeta.columns.find(column => column.name === source)?.kind === 'numeric';
+    const where = numeric ? finite(`TRY_CAST(${value} AS DOUBLE)`) : `${value} IS NOT NULL`;
+    const result = await queryColumns(`SELECT DISTINCT ${value} AS category FROM ${TABLE} WHERE ${where} ORDER BY category`);
+    categoryDomainCache.set(source, result.category);
+  }
+  return categoryDomainCache.get(source);
+}
 async function metadata(name) {
   const rows = (await connection.query(`DESCRIBE ${TABLE}`)).toArray();
   const columns = rows.filter(row => row.column_name !== internalRow).map(row => ({name: row.column_name, type: row.column_type, kind: columnKind(row.column_type)}));
@@ -322,6 +383,7 @@ async function importFile(file, options = {}) {
   await initialize(options);
   const original = file.name || options.sourceName || 'dataset';
   sourceMeta = undefined;
+  categoryDomainCache.clear();
   const format = (options.format || original.split('.').pop()).toLowerCase();
   if (!['parquet', 'pq', 'csv', 'tsv', 'json', 'jsonl', 'ndjson'].includes(format)) throw new Error('This file needs the Excel or MATLAB importer.');
   await connection.query(`DROP VIEW IF EXISTS ${TABLE}`);
@@ -370,8 +432,9 @@ async function summary(filters = [], options = {}) {
   if (!sourceMeta) throw new Error('Import a dataset first.');
   if (options.preparedAxis?.timeAxis?.timezone || options.timeAxis?.timezone || filters.some(condition => condition.timeAxis?.timezone)) await loadExtension('icu');
   const {where} = baseSQL({...options, filters}, sourceMeta.columns, internalRow);
-  const totalRows = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where}`));
   const numeric = sourceMeta.columns.filter(col => col.kind === 'numeric');
+  const accounting = await rowAccounting({...options, filters, mode: 'summary', y: numeric.map(column => column.name)});
+  const {totalRows} = accounting;
   const columns = {column: [], count: [], valid: [], min: [], max: [], mean: [], stddev: []};
   if (numeric.length) {
     const aggregates = numeric.flatMap((col, index) => {
@@ -384,7 +447,7 @@ async function summary(filters = [], options = {}) {
       for (const stat of ['valid','min','max','mean','stddev']) columns[stat].push(data[`s${index}_${stat}`][0]);
     });
   }
-  return {columns, rowCount: numeric.length, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind:'summary'}};
+  return {columns, rowCount: numeric.length, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind:'summary', rows: accounting.rows, seriesCounts: accounting.seriesCounts, invalidXRows: accounting.rows.invalidTime}};
 }
 
 async function distribution(spec) {
@@ -392,54 +455,67 @@ async function distribution(spec) {
   const y = selectedColumns(spec, columns);
   if (!y.length) throw new Error('Choose one or more numeric signals.');
   const {where} = baseSQL(spec, columns, internalRow);
-  const selections = y.map(name => `SELECT ${numericField(name, columns)} AS v FROM ${TABLE} WHERE ${where}`);
-  const pooled = selections.join(' UNION ALL ');
-  const stats = await queryColumns(`SELECT min(v) AS low, max(v) AS high, count(*) AS n, quantile_cont(v, 0.25) AS q1, quantile_cont(v, 0.75) AS q3, stddev_samp(v) AS stddev FROM (${pooled}) WHERE ${finite('v')}`);
-  const low = stats.low[0], high = stats.high[0], n = stats.n[0];
-  if (!n) {
-    const totalRows = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where}`));
-    return {
-      columns: {bin_left: [], bin_right: [], bin_center: [], ...Object.fromEntries(y.map(name => [name, []]))},
-      rowCount: 0, totalRows, sourceRows: sourceMeta.rowCount,
-      meta: {kind: 'distribution', binCount: 0, range: [], observationCounts: Object.fromEntries(y.map(name => [name, 0]))},
-    };
-  }
+  const accounting = await rowAccounting({...spec, mode: 'distribution'});
   let settings = typeof spec.bins === 'number' ? {mode: 'count', count: spec.bins} : {...spec.bins};
-  if (!settings.mode || settings.mode === 'auto') {
-    let width = 2 * (stats.q3[0] - stats.q1[0]) * n ** (-1 / 3);
-    if (!(width > 0)) width = 3.5 * stats.stddev[0] * n ** (-1 / 3);
-    if (!(width > 0)) width = (high - low) / Math.max(1, Math.ceil(Math.log2(n) + 1)) || 1;
-    settings = {mode: 'width', width};
+  if (settings.scope != null && !['filtered', 'dataset'].includes(settings.scope)) throw new Error('Bin scope must be filtered or dataset.');
+  let edges;
+  if (settings.edges) edges = validateBinEdges(settings.edges);
+  else {
+    const fitColumns = selectedColumns({y: spec.binFitColumns ?? y}, columns);
+    if (!fitColumns.length) throw new Error('Choose one or more signals for fitting bins.');
+    const fitWhere = settings.scope === 'dataset' ? 'TRUE' : where;
+    const pooled = fitColumns.map(name => `SELECT ${numericField(name, columns)} AS v FROM ${TABLE} WHERE ${fitWhere}`).join(' UNION ALL ');
+    const stats = await queryColumns(`SELECT min(v) AS low, max(v) AS high, count(*) AS n, quantile_cont(v, 0.25) AS q1, quantile_cont(v, 0.75) AS q3, stddev_samp(v) AS stddev FROM (${pooled}) WHERE ${finite('v')}`);
+    const low = stats.low[0], high = stats.high[0], n = stats.n[0];
+    if (n) {
+      if (!settings.mode || settings.mode === 'auto') {
+        let width = 2 * (stats.q3[0] - stats.q1[0]) * n ** (-1 / 3);
+        if (!(width > 0)) width = 3.5 * stats.stddev[0] * n ** (-1 / 3);
+        if (!(width > 0)) width = (high - low) / Math.max(1, Math.ceil(Math.log2(n) + 1)) || 1;
+        settings = {...settings, mode: 'width', width};
+      }
+      edges = makeBinEdges(low, high, {...settings, maxBins: 10000});
+    } else edges = [];
   }
-  const edges = makeBinEdges(low, high, {...settings, maxBins: 10000});
-  const binCount = edges.length - 1;
+  const binCount = Math.max(0, edges.length - 1);
+  const meta = {kind: 'distribution', binCount, binEdges: edges, binScope: settings.scope ?? 'filtered',
+    width: binCount ? edges[1] - edges[0] : undefined, range: edges.length ? [edges[0], edges.at(-1)] : [],
+    rows: accounting.rows, seriesCounts: accounting.seriesCounts, invalidXRows: accounting.rows.invalidTime,
+    observationCounts: Object.fromEntries(y.map(name => [name, 0]))};
+  if (!accounting.rows.usable || !binCount) return {
+    columns: {bin_left: [], bin_right: [], bin_center: [], ...Object.fromEntries(y.map(name => [name, []]))},
+    rowCount: 0, totalRows: accounting.totalRows, sourceRows: sourceMeta.rowCount, meta,
+  };
   const output = {bin_left: edges.slice(0, -1), bin_right: edges.slice(1), bin_center: edges.slice(1).map((right, i) => edges[i] + (right - edges[i]) / 2)};
-  const observationCounts = {};
   for (const name of y) {
     const value = numericField(name, columns);
     const branches = edges.slice(1).map((edge, i) => `WHEN v ${i === binCount - 1 ? '<=' : '<'} ${quoteValue(edge)} THEN ${i}`).join(' ');
-    const data = await queryColumns(`SELECT CASE ${branches} END AS bin, count(*) AS n FROM (SELECT ${value} AS v FROM ${TABLE} WHERE ${where}) WHERE ${finite('v')} GROUP BY bin ORDER BY bin`);
+    const outside = `v < ${quoteValue(edges[0])} OR v > ${quoteValue(edges.at(-1))}`;
+    const data = await queryColumns(`SELECT CASE WHEN ${outside} THEN NULL ${branches} END AS bin, count(*) AS n FROM (SELECT ${value} AS v FROM ${TABLE} WHERE ${where}) WHERE ${finite('v')} GROUP BY bin ORDER BY bin`);
     const counts = Array(binCount).fill(0);
-    for (let i = 0; i < data.bin.length; i++) if (data.bin[i] != null) counts[data.bin[i]] = Number(data.n[i]);
+    for (let i = 0; i < data.bin.length; i++) {
+      if (data.bin[i] == null && data.n[i]) throw new Error('Bin edges must cover every finite selected value.');
+      if (data.bin[i] != null) counts[data.bin[i]] = Number(data.n[i]);
+    }
     output[name] = counts;
-    observationCounts[name] = counts.reduce((sum, number) => sum + number, 0);
+    meta.observationCounts[name] = counts.reduce((sum, number) => sum + number, 0);
   }
-  const totalRows = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where}`));
-  return {columns: output, rowCount: binCount, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind: 'distribution', width: edges[1] - edges[0], binCount, range: [low, high], observationCounts}};
+  return {columns: output, rowCount: binCount, totalRows: accounting.totalRows, sourceRows: sourceMeta.rowCount, meta};
 }
 async function query(spec) {
   if (!sourceMeta) throw new Error('Import a dataset first.');
   if (spec.timeAxis?.timezone || spec.timeAxis?.outputTimezone || spec.preparedAxis?.timeAxis?.timezone || spec.filters?.some(condition => condition.timeAxis?.timezone)) await loadExtension('icu');
 
   if (!['preview','export'].includes(spec.mode)) {
-    const chartNames = new Set([spec.x, ...selectedColumns(spec, sourceMeta.columns), spec.color, spec.marker].filter(Boolean));
+    const chartNames = new Set([spec.x, ...selectedColumns(spec, sourceMeta.columns), ...(spec.binFitColumns ?? []), spec.color, spec.marker].filter(Boolean));
     const unsafeTypes = sourceMeta.columns.filter(col => chartNames.has(col.name) && /(?:U?BIGINT|U?HUGEINT)/i.test(col.type));
     if (unsafeTypes.length) {
       const {where} = baseSQL(spec, sourceMeta.columns, internalRow);
       for (const col of unsafeTypes) {
         if (col.name === spec.x && spec.timeAxis?.profile?.toLowerCase().includes('epoch')) continue;
         const name = field(col.name, sourceMeta.columns);
-        const unsafe = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where} AND (${name} > 9007199254740991 OR ${name} < -9007199254740991)`));
+        const fullFit = spec.bins?.scope === 'dataset' || ['color', 'marker'].some(encoding => spec[encoding] === col.name && spec[`${encoding}Binning`]?.scope === 'dataset');
+        const unsafe = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${fullFit ? 'TRUE' : where} AND (${name} > 9007199254740991 OR ${name} < -9007199254740991)`));
         if (unsafe) throw new Error(`Column “${col.name}” contains integers too large to plot accurately in JavaScript. Scale that column before plotting; full values remain available in preview and export.`);
       }
     }
@@ -449,20 +525,39 @@ async function query(spec) {
   const columns = await queryColumns(sql);
   const xName = spec.x || ROW_COLUMN;
   if (spec.timeAxis?.outputTimezone && columns[xName]) columns[xName] = columns[xName].map(value => inDisplayTimezone(value, spec.timeAxis.outputTimezone));
-  const {where, filterWhere, preparedExpr} = baseSQL(spec, sourceMeta.columns, internalRow);
-  const totalRows = Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${where}`));
-  const invalidXRows = preparedExpr ? Number(await queryScalar(`SELECT count(*) FROM ${TABLE} WHERE ${filterWhere} AND ${preparedExpr} IS NULL`)) : 0;
-  const result = {columns, rowCount: Object.values(columns)[0]?.length || 0, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind: spec.mode || 'trends', x: spec.x || ROW_COLUMN, sampling: false, invalidXRows, groups: {}}};
+  const accounting = await rowAccounting(spec);
+  const result = {columns, rowCount: Object.values(columns)[0]?.length || 0, totalRows: accounting.totalRows, sourceRows: sourceMeta.rowCount,
+    meta: {kind: spec.mode || 'trends', x: spec.x || ROW_COLUMN, sampling: false, invalidXRows: accounting.rows.invalidTime, rows: accounting.rows, seriesCounts: accounting.seriesCounts, groups: {}}};
   for (const encoding of ['color', 'marker']) {
     const source = spec[encoding];
     const settings = spec[`${encoding}Binning`];
     if (!source || !settings || ['Individual values', 'individual', 'none'].includes(settings.mode)) continue;
     if (!columns[source]) throw new Error(`The ${encoding} grouping source is not in the selected chart.`);
-    const binned = assignBins(columns[source], settings);
+    if (settings.scope != null && !['filtered', 'dataset'].includes(settings.scope)) throw new Error('Bin scope must be filtered or dataset.');
+    let fitted = settings;
+    if (settings.scope === 'dataset' && !settings.edges) {
+      const value = numericField(source, sourceMeta.columns);
+      const domain = await queryColumns(`SELECT min(${value}) AS low, max(${value}) AS high FROM ${TABLE} WHERE ${finite(value)}`);
+      if (domain.low[0] == null) continue;
+      fitted = {...settings, edges: makeBinEdges(domain.low[0], domain.high[0], settings)};
+    }
+    if (!columns[source].length && !fitted.edges) continue;
+    const binned = assignBins(columns[source], fitted);
     let name = `__${encoding}_group`;
     while (Object.hasOwn(columns, name)) name += '_';
     columns[name] = binned.groups;
-    result.meta.groups[encoding] = {column: name, source, ...binned, groups: undefined};
+    result.meta.groups[encoding] = {column: name, source, scope: settings.scope ?? 'filtered', ...binned, groups: undefined};
+  }
+  if (['scatter', 'grouped-scatter', 'grouped scatter'].includes(spec.mode)) {
+    result.meta.categoryDomains = {};
+    for (const encoding of ['color', 'marker']) {
+      const source = spec[encoding];
+      const binning = spec[`${encoding}Binning`];
+      const binned = binning && !['Individual values', 'individual', 'none'].includes(binning.mode);
+      if (!source || binned) continue;
+      const numeric = sourceMeta.columns.find(column => column.name === source)?.kind === 'numeric';
+      if (encoding === 'marker' || !numeric || spec.colorMode === 'discrete') result.meta.categoryDomains[encoding] = await categoryDomain(source);
+    }
   }
   return result;
 }
@@ -475,7 +570,7 @@ export async function handleEngineMessage(message) {
     case 'importRows': return importRows(...args);
     case 'summary': return summary(...args);
     case 'query': return query(...args);
-    case 'close': await connection?.close(); await database?.terminate(); databaseWorker?.terminate(); connection = database = sourceMeta = undefined; loadedExtensions.clear(); return {closed: true};
+    case 'close': await connection?.close(); await database?.terminate(); databaseWorker?.terminate(); connection = database = sourceMeta = undefined; loadedExtensions.clear(); categoryDomainCache.clear(); return {closed: true};
     default: throw new Error(`Unknown local-engine operation: ${method}`);
   }
 }

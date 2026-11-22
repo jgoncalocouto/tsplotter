@@ -39,7 +39,10 @@ Preview pagination is presentation only and must not affect analysis or exports.
 
 ## Five chart views
 
-1. **Trends:** 1–6 synchronized-X panels with independent signal lists; markers,
+Every view uses the same Add/Duplicate/Remove panel lifecycle and selected editor.
+Panels keep independent settings and exports; filters remain global by design.
+
+1. **Trends:** 1–6 independent panels with signal lists; markers,
    six line shapes, line width, log/linear scale, range slider, unified hover and
    spikes. Retain gaps. SVG line simplification must be disabled when used.
 2. **Distribution:** 1–6 independent titled panels with add/duplicate/remove and
@@ -58,11 +61,11 @@ Preview pagination is presentation only and must not affect analysis or exports.
    category/bin order and toggle the corresponding point groups. Exclude only
    rows missing/nonfinite in selected axes/group variables. Shared filters apply
    to every panel; each card exports its own data/image and stacks on mobile.
-4. **Rolling window:** trailing min/mean/max measured in rows, current-row
+4. **Rolling window:** 1–6 independent analyses of trailing min/mean/max measured in rows, current-row
    inclusion flag, full-window flag (`min_periods=window` versus 1), min/max band,
    raw markers and hover/range options. Excluding current shifts the input by
    exactly one row before the rolling calculation. Nulls do not become zeros.
-5. **Derivatives:** three aligned panels for raw/first/second backward differences.
+5. **Derivatives:** 1–6 analyses, each containing three aligned plots for raw/first/second backward differences.
    First derivative begins with null; second begins with two nulls. Respect
    seconds/minutes/hours/days/sample spacing or explicit numeric X. A zero delta
    produces null. Optional trailing rolling-mean smoothing changes derivatives
@@ -70,7 +73,10 @@ Preview pagination is presentation only and must not affect analysis or exports.
 
 ## Numeric groups
 
-- Fit edges on complete finite selected rows after filters, not on a preview.
+- Fit edges on complete finite selected rows after filters by default, not on a
+  preview. Full-dataset fitting keeps boundaries fixed across filters without
+  changing which observations are plotted. Distribution can fit shared edges
+  over all panels' selected columns using the first panel's bin settings.
 - Intervals begin at finite minimum and are lower inclusive / upper exclusive,
   except final upper edge inclusive. Width mode retains requested interval width
   so the final edge can exceed the maximum. Constant values form one group.
@@ -80,21 +86,42 @@ Preview pagination is presentation only and must not affect analysis or exports.
 - Keep original values at full precision. Integers beyond JavaScript's exact
   53-bit range must not silently collapse into the same value.
 
-## Configuration and export
+## Comparisons, configuration and export
 
-- Save/load is versioned and data-free. Version 2 preserves every scatter and distribution panel
-  and inactive chart as well as the current view. Accept original v1 settings,
+- Category colors/symbols and source-series colors remain stable across filters
+  and panel ordering. Optional axis linking shares ranges/zoom/reset only for
+  compatible variables, scales and derivative units; it performs no data queries.
+- Save/load is versioned and data-free. Version 3 preserves every panel
+  and inactive chart as well as the current view. Accept v1/v2 settings,
   migrating distinct Scatter and Grouped scatter plots into independent panels
-  and old histogram settings into one Distribution panel;
+  and old histogram/analysis settings into their respective panels;
   ignore all legacy `*_maxpts` without sampling.
 - Missing columns fall back or skip with notices. Loading defaults clears prior
   overrides. Invalid config leaves previous valid state untouched.
 - Configuration can be loaded before the dataset. Data is always selected
   separately. Saving must not include source file bytes, private content, caches,
   user paths or credentials.
+- Valid inactive bin preferences survive saving; invalid unused numeric fields
+  may reset. Local recovery stores only portable settings and the saved-file
+  baseline, never dataset bytes or source file metadata. Invalid drafts retain
+  the last valid recovery. Clearing recovery persists until a later edit.
+- Unsaved settings and unapplied chart changes are distinct states. Preview,
+  summary and full export use current global filters/time preparation without
+  rendering, validating or applying unfinished chart settings.
 - Full export covers the full filtered data. Chart export matches exactly what
   is represented; bins are exported as separate columns, never overwritten axes.
 - Native Plotly zoom, pan, hover, legend toggling and PNG export remain available.
+
+## Row accounting
+
+- Matched rows counts global filters before time preparation. Filtered out
+  counts only filter exclusions; invalid time is separate.
+- Every chart provides source/matched/filteredOut/invalidTime/usable/excludedValues.
+  Source equals filteredOut + invalidTime + excludedValues + usable.
+- Multi-signal charts use the union of usable rows and report finite value
+  counts per signal. Scatter requires all selected axes/group values. Derivative
+  leading nulls are expected outputs, not excluded source values. Histogram bin
+  counts and preview limits must never be presented as source-row counts.
 
 ## Privacy, hosting and runtime
 

@@ -78,7 +78,8 @@ async function saved(target) {
   const text = await download(target, '#save-config');
   const document = JSON.parse(text);
   assert.equal(document.app, 'tsplotter');
-  assert.equal(document.version, 2);
+  assert.equal(document.version, 3);
+  for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels']) assert.ok(document.settings[key].length >= 1);
   assert.ok(!text.includes(file.name), 'Configurations must exclude the dataset source');
   assert.ok(Buffer.byteLength(text) < 256 * 1024);
   return document;
@@ -241,7 +242,16 @@ try {
   await load(page, twoPanels, 2);
   assert.equal(await page.locator('#chart-type').inputValue(), 'Scatter');
   assert.deepEqual((await saved(page)).settings.scatter_panels, twoPanels.settings.scatter_panels);
-  pass('Version 2 configuration round-trip restores the active Scatter view and every panel');
+  pass('Version 3 configuration round-trip restores the active Scatter view and every panel');
+
+  const legacyV2 = structuredClone(twoPanels);
+  legacyV2.version = 2;
+  for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels', 'comparison_link_x', 'comparison_link_y', 'distribution_shared_bins']) delete legacyV2.settings[key];
+  for (const panel of legacyV2.settings.scatter_panels) {delete panel.colorBinScope; delete panel.markerBinScope;}
+  for (const panel of legacyV2.settings.distribution_panels) delete panel.binScope;
+  await load(page, legacyV2, 2);
+  assert.deepEqual((await saved(page)).settings.scatter_panels, twoPanels.settings.scatter_panels);
+  pass('Version 2 canonical scatter panels load with their settings and default filtered bin scopes intact');
 
   const legacy = {app: 'tsplotter', version: 1, settings: {plot_type: 'Grouped scatter',
     setup_time_mode: 'Relative time', setup_index: 'x', sc2_x: 'signal', sc2_y: 'aux',
@@ -265,6 +275,8 @@ try {
   await page.fill('[data-key="flt2_up_num_0"]', '199');
   await update(page, 2);
   assert.equal(await page.locator('#row-count').textContent(), '100');
+  for (let i = 0; i < 2; i++) assert.deepEqual(await page.locator(`[data-scatter-card="${i}"] [data-row-ledger]`).evaluate(el => JSON.parse(el.dataset.ledger)),
+    {source: rowCount, matched: 100, filteredOut: rowCount - 100, invalidTime: 0, usable: 100, excludedValues: 0});
   for (let i = 0; i < 2; i++) {
     const trace = await points(page, i);
     assert.equal(trace.x.length, 100);

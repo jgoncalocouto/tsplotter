@@ -77,12 +77,19 @@ try {
   assert.ok(await desktop.locator('#chart-export').isDisabled());
   assert.ok(await desktop.locator('#image-export').isDisabled());
   assert.deepEqual(await desktop.locator('#chart').evaluate(el => el.data.map(trace => trace.name)), previousTraceNames);
+  await desktop.locator('#preview-panel > summary').click();
+  await desktop.locator('#preview-button').click();
+  await desktop.waitForFunction(() => !document.querySelector('#render-button')?.disabled && /ready/i.test(document.querySelector('#status')?.textContent || ''));
+  assert.equal(await desktop.locator('#preview-table tbody tr').count(), 100);
+  assert.ok(await desktop.locator('#dirty-indicator').isVisible(), 'Preview leaves chart changes unapplied');
+  assert.ok(await desktop.locator('#chart-export').isDisabled());
+  assert.deepEqual(await desktop.locator('#chart').evaluate(el => el.data.map(trace => trace.name)), previousTraceNames);
   await desktop.locator('#render-button').click(); await waitForChart(desktop);
   assert.ok(!await desktop.locator('#dirty-indicator').isVisible());
   assert.ok(await desktop.locator('#chart-export').isEnabled());
   assert.ok(await desktop.locator('#image-export').isEnabled());
   assert.deepEqual(await desktop.locator('#chart').evaluate(el => el.data.map(trace => trace.x.length)), [720, 720]);
-  pass('Unapplied signal changes disable chart/image exports until the full 720-point traces are updated');
+  pass('Preview leaves chart changes unapplied; chart/image exports enable after the full 720-point traces are updated');
 
   const trendsTab = desktop.getByRole('tab', { name: 'Trends', exact: true });
   await trendsTab.focus(); await trendsTab.press('ArrowRight');

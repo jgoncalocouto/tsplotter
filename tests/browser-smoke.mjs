@@ -91,10 +91,16 @@ try {
   const saved = await readFile(await download.path(), 'utf8');
   const config = JSON.parse(saved);
   assert.equal(config.app, 'tsplotter');
-  assert.equal(config.version, 2);
+  assert.equal(config.version, 3);
   assert.equal(config.settings.plot_type, 'Scatter');
   assert.equal(config.settings.scatter_panels.length, 1);
   assert.equal(config.settings.scatter_panels[0].y, 'signal');
+  for (const key of ['trend_panels', 'distribution_panels', 'rolling_panels', 'derivative_panels']) {
+    assert.equal(config.settings[key].length, 1, `${key} is saved independently`);
+  }
+  assert.deepEqual(config.settings.trend_panels[0].columns, ['signal']);
+  assert.equal(config.settings.rolling_panels[0].y, 'signal');
+  assert.equal(config.settings.derivative_panels[0].y, 'signal');
   assert.ok(!saved.includes('full-points.csv'), 'Configuration must not include dataset source names');
   assert.ok(saved.length < 256 * 1024, 'Configuration must contain settings rather than dataset rows');
   await draw('Trends');
@@ -209,7 +215,12 @@ try {
   await chooseSignals(page, 'signal');
   await page.click('#render-button');
   await rendered();
-  assert.equal(await page.locator('#row-count').textContent(), '3', 'Invalid DMY timestamps are excluded from prepared data');
+  assert.equal(await page.locator('#row-count').textContent(), '4', 'Matched rows include the row with an unusable timestamp');
+  assert.equal(await page.locator('#filtered-count').textContent(), '0');
+  assert.equal(await page.locator('#invalid-time-count').textContent(), '1');
+  assert.deepEqual(await page.locator('#primary-plot [data-row-ledger]').evaluate(el => JSON.parse(el.dataset.ledger)),
+    {source: 4, matched: 4, filteredOut: 0, invalidTime: 1, usable: 3, excludedValues: 0});
+  assert.ok((await traces()).some(trace => trace.length === 3), 'All three valid timestamp rows are plotted');
   if (!await page.locator('#filter-panel').evaluate(el => el.open)) await page.locator('#filter-panel > summary').click();
   await page.click('#add-filter');
   await page.selectOption('[data-key="flt2_var_0"]', '(time index)');

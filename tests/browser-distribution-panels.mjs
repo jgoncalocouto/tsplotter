@@ -71,7 +71,8 @@ async function saved(target) {
   if (openDrawer) await target.locator('#close-sidebar').click();
   const config = JSON.parse(text);
   assert.equal(config.app, 'tsplotter');
-  assert.equal(config.version, 2);
+  assert.equal(config.version, 3);
+  for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels']) assert.ok(config.settings[key].length >= 1);
   assert.ok(!text.includes(fixture.name), 'Configuration contains settings, not the dataset source');
   assert.ok(Buffer.byteLength(text) < 256 * 1024);
   return config;
@@ -204,7 +205,16 @@ try {
   assert.equal(restored.settings.plot_type, 'Distribution');
   assert.deepEqual(restored.settings.distribution_panels, twoPanels.settings.distribution_panels);
   assert.deepEqual(restored.settings.scatter_panels, scatterSettings);
-  pass('Version 2 round-trip restores every distribution and retains independently configured scatter panels');
+  pass('Version 3 round-trip restores every distribution and retains independently configured scatter panels');
+
+  const legacyV2 = structuredClone(twoPanels);
+  legacyV2.version = 2;
+  for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels', 'comparison_link_x', 'comparison_link_y', 'distribution_shared_bins']) delete legacyV2.settings[key];
+  for (const panel of legacyV2.settings.scatter_panels) {delete panel.colorBinScope; delete panel.markerBinScope;}
+  for (const panel of legacyV2.settings.distribution_panels) delete panel.binScope;
+  await load(page, legacyV2, 2);
+  assert.deepEqual((await saved(page)).settings.distribution_panels, twoPanels.settings.distribution_panels);
+  pass('Version 2 distribution panels retain their signals, bins and default filtered scope');
 
   await load(page, {app: 'tsplotter', version: 1, settings: {
     plot_type: 'Distribution', setup_time_mode: 'Relative time', setup_index: 'x',
@@ -246,6 +256,8 @@ try {
   await chooseSignals(page, ['sparse']);
   await update(page, 2);
   assert.equal(await page.locator('#chart').evaluate(el => el.data?.length || 0), 0);
+  assert.deepEqual(await page.locator('[data-distribution-card="0"] [data-row-ledger]').evaluate(el => JSON.parse(el.dataset.ledger)),
+    {source: rowCount, matched: 100, filteredOut: rowCount - 100, invalidTime: 0, usable: 0, excludedValues: 100});
   assert.ok(await page.locator('[data-distribution-export="0"]').isDisabled());
   assert.ok(await page.locator('[data-distribution-image="0"]').isDisabled());
   for (const trace of await histogram(page, 1)) assert.equal(total(trace), 100);
