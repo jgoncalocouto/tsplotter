@@ -6,11 +6,14 @@ import {buildFigure,chartRequest} from './charts.js';
 import {enhancePickers,closePickers} from './pickers.js';
 import {configurationSignature,saveWorkspace,loadWorkspace,clearWorkspace} from './workspace-recovery.js';
 import {axisRangeNumbers,comparisonAxes,linkedRangePatch} from './comparisons.js';
+import {csvBlob as csv} from './csv.js';
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $=s=>document.querySelector(s),fmt=n=>Number(n??0).toLocaleString();
 let schema=null,state=defaultSettings(),lastResult=null,currentName='',busy=false,pendingSettings=null,dirty=false,lastFile=null;
 let activePanels={},lastPanelResults=[],savedConfig=null,recoveryAvailable=false,recoverySuppressed=false,recoveryProblem='',linkingAxes=false;
+let lastSummaryResult=null,summaryPage=0,summaryContext='',analysisGeneration=0;
+const SUMMARY_PAGE_SIZE=100;
 const panelViews={
  Trends:{slug:'trend',label:'Trend',key:'trend_panels',max:MAX_ANALYSIS_PANELS,read:trendPanels,create:defaultTrendPanel},
  Scatter:{slug:'scatter',label:'Scatter',key:'scatter_panels',max:MAX_SCATTER_PANELS,read:scatterPanels,create:defaultScatterPanel},
@@ -76,7 +79,7 @@ $('#app').innerHTML=`<div id="progress" class="progress hidden"></div>
  <div id="chart" class="plot-canvas"><div id="chart-empty">Choose signals to begin.</div></div><div class="chart-footer"><div class="chart-readout"><span class="readout-dot"></span><span id="plotted-count">—</span></div><div class="chart-export-tools"><button id="chart-export" class="text-button subtle">${icons.download}Chart data</button><button id="image-export" class="text-button subtle">${icons.image}Save image</button></div></div><details id="bin-panel" class="bin-panel hidden"><summary>Group intervals & counts</summary><div id="bin-details" class="bin-details"></div></details>
  </article></div>
  </section>
- <section class="data-panels"><details class="panel" id="preview-panel"><summary>${icons.file}Data preview & export<span>Inspect the rows behind your analysis</span></summary><div class="details-body"><div class="panel-toolbar"><p class="field-help">First 100 rows · up to 30 columns. Full exports contain every filtered row.</p><div class="button-row"><button id="preview-button" class="secondary subtle">Show preview</button><button id="data-export" class="secondary subtle">${icons.download}Export full dataset</button></div></div><div id="preview-table"></div></div></details><details class="panel" id="summary-panel"><summary>${icons.sliders}Summary statistics<span>A closer look at your numeric signals</span></summary><div class="details-body"><button id="summary-button" class="secondary subtle">Calculate summary</button><div id="summary-table"></div></div></details></section>
+ <section class="data-panels"><details class="panel" id="preview-panel"><summary>${icons.file}Data preview & export<span>Inspect the rows behind your analysis</span></summary><div class="details-body"><div class="panel-toolbar"><p class="field-help">First 100 rows · up to 30 columns. Full exports contain every filtered row.</p><div class="button-row"><button id="preview-button" class="secondary subtle">Show preview</button><button id="data-export" class="secondary subtle">${icons.download}Export full dataset</button></div></div><div id="preview-table"></div></div></details><details class="panel" id="summary-panel"><summary>${icons.sliders}Summary statistics<span>A closer look at your numeric signals</span></summary><div class="details-body"><div class="summary-toolbar"><button id="summary-button" class="secondary subtle">Calculate summary</button><label class="field summary-search">Find a signal<input id="summary-search" type="search" placeholder="Search signal names" disabled></label><span id="summary-result-count" class="field-help"></span></div><div id="summary-table"></div><div id="summary-pagination" class="summary-pagination hidden"><button id="summary-prev" class="secondary subtle" disabled>Previous</button><span id="summary-page-status" role="status"></span><button id="summary-next" class="secondary subtle" disabled>Next</button></div></div></details></section>
  </div><footer class="small-footer"><span>TSPlotter</span><span>Every signal has a story.</span></footer></main></div>`;
 
 function status(text,kind=''){const el=$('#status');el.textContent=text;el.className=`status ${kind}`;}
@@ -96,6 +99,7 @@ function syncWorkspaceSettings(){
   indicator.dataset.unsaved='true';indicator.textContent=`Unsaved settings · finish invalid fields${recoveryAvailable?'; recovery keeps the last valid settings':''}.`;
  }
  $('#clear-recovery').disabled=busy||!recoveryAvailable;
+ syncSummaryActions();
 }
 function initializeRecovery(){
  try{
@@ -115,6 +119,7 @@ function syncActions(){
  for(const id of ['render-button','preview-button','data-export','summary-button'])$(`#${id}`).disabled=busy||!schema;
  $('#reload-sheet').disabled=busy||!lastFile||!/\.xlsx?$/i.test(lastFile.name);
  $('#clear-recovery').disabled=busy||!recoveryAvailable;
+ syncSummaryActions();
  for(const view of Object.values(panelViews)){
   const count=state[view.key]?.length??1;
   for(const action of ['add','duplicate'])if($(`#${action}-${view.slug}`))$(`#${action}-${view.slug}`).disabled=busy||!schema||count>=view.max;
@@ -129,7 +134,7 @@ function setBusy(value){
  $('#render-button').innerHTML=value?'<span class="button-spinner"></span><span>Updating…</span>':`${icons.refresh}<span>${panelView()&&(state[panelView().key]?.length??1)>1?'Update charts':'Update chart'}</span>`;
  syncActions();
 }
-async function task(fn){if(busy)return false;setBusy(true);try{await fn();return true;}catch(error){console.error(error);if(schema)setDirty(true);status(error.message??String(error),'error');return false;}finally{setBusy(false);}}
+async function task(fn){if(busy)return false;setBusy(true);try{await fn();return true;}catch(error){if(error.name==='AbortError')return false;console.error(error);if(schema)setDirty(true);status(error.message??String(error),'error');return false;}finally{setBusy(false);}}
 function refreshView(){
  const mode=state.plot_type??'Trends';$('#chart-type').value=mode;
  for(const tab of document.querySelectorAll('[data-chart-mode]')){const selected=tab.dataset.chartMode===mode;tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;}
@@ -306,7 +311,7 @@ function analysisOptions(){
  return {preparedAxis:{x:xColumn(),timeAxis},x:xColumn(),timeAxis};
 }
 function filters(){const f=filtersFromSettings(state,schema);const options=analysisOptions();for(const condition of f){if(condition.column==='(time index)')condition.column=xColumn();if(condition.kind==='datetime'&&condition.column===xColumn()&&options.timeAxis)condition.timeAxis=options.timeAxis;}return f;}
-async function importFile(file){await task(async()=>{status('Reading your file on this device…','busy');capture();const isFirst=!schema;schema=null;lastResult=null;activePanels={};lastPanelResults=[];$('#preview-table').replaceChildren();$('#summary-table').replaceChildren();resetPlotOutputs();$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');let imported,importWarnings=[];
+async function importFile(file){await task(async()=>{status('Reading your file on this device…','busy');capture();const isFirst=!schema;schema=null;lastResult=null;activePanels={};lastPanelResults=[];$('#preview-table').replaceChildren();clearSummary();resetPlotOutputs();$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');let imported,importWarnings=[];
  if(/\.xlsx?$/i.test(file.name)){const {readExcel}=await import('./file-import.js');const result=await readExcel(file,{sheetName:$('#sheet-name').value||undefined});imported=await engine.importRows(result.rows,{sourceName:file.name});importWarnings=result.warnings??[];}
  else if(/\.mat$/i.test(file.name)){const {readMatV73}=await import('./file-import.js');const result=await readMatV73(file);imported=await engine.importRows(result.rows,{sourceName:file.name});importWarnings=result.warnings??[];}
  else imported=await engine.importFile(file);
@@ -318,9 +323,34 @@ function unbindScatterLegend(graph){
  if(graph?._scatterDoubleHandler){graph.removeListener?.('plotly_legenddoubleclick',graph._scatterDoubleHandler);delete graph._scatterDoubleHandler;}
 }
 function purgePlot(graph){
+ if(!graph)return;
  unbindScatterLegend(graph);
  unbindComparison(graph);
- if(graph)Plotly.purge(graph);
+ const release=regl=>{
+  const gl=regl?._gl;
+  try{regl?.destroy();}catch{}
+  try{if(gl&&!gl.isContextLost())gl.getExtension('WEBGL_lose_context')?.loseContext();}catch{}
+ };
+ // PNG snapshots use Plotly's internal purge, which also leaves detached contexts.
+ // Observe its removed canvases once, releasing only existing Plotly-owned regl.
+ if(!purgePlot._glObserver){
+  purgePlot._glObserver=new MutationObserver(records=>{
+   const canvases=new Set();
+   for(const record of records)for(const node of record.removedNodes){
+    if(node.nodeType!==1)continue;
+    if(node.matches('canvas.gl-canvas'))canvases.add(node);
+    for(const canvas of node.querySelectorAll('canvas.gl-canvas'))canvases.add(canvas);
+   }
+   for(const canvas of canvases)if(!canvas.isConnected)release(canvas.__data__?.regl);
+  });
+  purgePlot._glObserver.observe(document.body,{childList:true,subtree:true});
+ }
+ // Plotly removes its canvases without explicitly releasing their GL contexts.
+ // Capture only its existing regl instances; getContext here could create new ones.
+ const regls=new Set();
+ graph._fullLayout?._glcanvas?.each?.(layer=>{if(layer?.regl)regls.add(layer.regl);});
+ try{Plotly.purge(graph);}
+ finally{for(const regl of regls)release(regl);}
 }
 function removeExtraPlots(){
  for(const card of $('#plot-grid').querySelectorAll('.plot-panel'))if(card.id!=='primary-plot'){
@@ -328,6 +358,7 @@ function removeExtraPlots(){
  }
 }
 function resetPlotOutputs(){
+ analysisGeneration++;
  removeExtraPlots();purgePlot($('#chart'));lastResult=null;lastPanelResults=[];
  $('#chart').innerHTML='<div class="plot-empty">Choose signals and update the chart.</div>';
  $('#bin-panel').classList.add('hidden');$('#bin-details').textContent='';$('#plotted-count').textContent='—';
@@ -463,24 +494,38 @@ async function updatePanelCharts(sharedFilters,preparedAxis){
   const firstBins={...requests[0].bins},fitColumns=[...new Set(panels.flatMap(panel=>panel.columns))];
   for(const request of requests){request.bins={...firstBins};request.binFitColumns=fitColumns;}
  }
- const results=[];
- for(let index=0;index<requests.length;index++){
+ const results=[],generation=analysisGeneration,viewStates=new Map();
+ lastPanelResults=[];lastResult=null;setPanelLayout(panels);
+ for(const graph of $('#plot-grid').querySelectorAll('.plot-canvas')){
+  const ranges=Object.fromEntries(Object.keys(graph.layout??{}).filter(key=>/^[xy]axis\d*$/.test(key)&&graph._fullLayout?.[key]?.autorange===false).map(key=>[key,[...graph._fullLayout[key].range]]));
+  viewStates.set(graph.id,{revision:graph.layout?.uirevision,ranges,visibility:(graph.data??[]).map(trace=>trace.visible)});
+  purgePlot(graph);graph.innerHTML='<div class="plot-empty">Updating this panel…</div>';
+ }
+ let plotted=0;
+ for(let index=0;index<panels.length;index++){
+  if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
   status(`Calculating ${view.slug} ${index+1} of ${panels.length} · every selected row…`,'busy');
   if(sharedBins&&index>0&&results[0].meta?.binEdges?.length>=2)requests[index].bins.edges=[...results[0].meta.binEdges];
   const result=await engine.query(requests[index]);result.meta??={};
+  if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
   if(view.slug==='scatter')result.meta.colorKind=schema.columns.find(column=>column.name===panels[index].color)?.kind;
-  results.push(result);
- }
- setPanelLayout(panels);lastPanelResults=results.map((result,index)=>({result,panel:panels[index]}));lastResult=results[0];
- let plotted=0;
- for(let index=0;index<panels.length;index++){
-  const result=results[index],graph=$(`#${panelChartId(index)}`),card=$(`[data-${view.slug}-card="${index}"]`);
+  results.push(result);lastPanelResults[index]={result,panel:panels[index]};if(index===0)lastResult=result;
+  const graph=$(`#${panelChartId(index)}`),card=$(`[data-${view.slug}-card="${index}"]`);
   const rows=rowsFor(result);
   if(result.rowCount&&rows.usable>0){
    const figure=buildFigure(result,state,requests[index].x,index);
+   const savedView=viewStates.get(graph.id);
+   if(savedView?.revision===figure.layout.uirevision){
+    for(const [name,range]of Object.entries(savedView.ranges))if(figure.layout[name])Object.assign(figure.layout[name],{range,autorange:false});
+    figure.data.forEach((trace,at)=>{if(savedView.visibility[at]!==undefined)trace.visible=savedView.visibility[at];});
+   }
    if(panels.length>1&&view.slug!=='derivative'){figure.layout.height=440+Math.max(0,figure.layout.height-510);figure.layout.legend.y=1-36/figure.layout.height;}
    graph.querySelectorAll('.plot-empty,#chart-empty').forEach(element=>element.remove());
+   status(`Rendering ${view.slug} ${index+1} of ${panels.length} · ${fmt(rows.usable)} usable rows…`,'busy');
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+   if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
    unbindScatterLegend(graph);unbindComparison(graph);await Plotly.react(graph,figure.data,figure.layout,figure.config);
+   if(generation!==analysisGeneration||!schema){purgePlot(graph);throw new DOMException('Analysis cancelled.','AbortError');}
    if(view.slug==='scatter')bindScatterLegend(graph,figure);
    bindComparison(graph,panels[index],figure);
    let warnings=card.querySelector('.plot-warnings');
@@ -497,13 +542,38 @@ async function updatePanelCharts(sharedFilters,preparedAxis){
  return {plotted,count:panels.length};
 }
 async function updateChart(){
- capture();if(!schema)return;$('#preview-table').replaceChildren();$('#summary-table').replaceChildren();
+ capture();if(!schema)return;$('#preview-table').replaceChildren();if(summaryContext!==dataContext())clearSummary();
  const started=performance.now(),updated=await updatePanelCharts(filters(),analysisOptions().preparedAxis);setDirty(false);
  status(`Ready · ${updated.count} ${panelView().label.toLowerCase()}${updated.count===1?'':'s'} updated in ${((performance.now()-started)/1000).toFixed(2)} s${updated.plotted?'':' · no usable values; check signals or filters.'}`);
 }
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
-function csv(result){const keys=Object.keys(result.columns);const quote=x=>{const s=x===null||x===undefined?'':typeof x==='object'?JSON.stringify(x):String(x);return /[",\r\n]/.test(s)?`"${s.replaceAll('"','""')}"`:s;};const lines=[keys.map(quote).join(',')];for(let i=0;i<result.rowCount;i++)lines.push(keys.map(k=>quote(result.columns[k][i])).join(','));return new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});}
 function table(result){const keys=Object.keys(result.columns).slice(0,30);return `<div class="table-wrap"><table><thead><tr>${keys.map(k=>`<th>${esc(k)}</th>`).join('')}</tr></thead><tbody>${Array.from({length:Math.min(result.rowCount,100)},(_,i)=>`<tr>${keys.map(k=>`<td>${esc(result.columns[k][i])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;}
+function summaryMatches(){
+ const normalize=value=>String(value).normalize('NFKD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+ const terms=normalize($('#summary-search').value).trim().split(/\s+/).filter(Boolean);
+ return (lastSummaryResult?.columns.column??[]).flatMap((name,index)=>terms.every(term=>normalize(name).includes(term))?[index]:[]);
+}
+function syncSummaryActions(){
+ const count=summaryMatches().length;
+ $('#summary-search').disabled=busy||!lastSummaryResult;
+ $('#summary-prev').disabled=busy||summaryPage===0||!count;
+ $('#summary-next').disabled=busy||(summaryPage+1)*SUMMARY_PAGE_SIZE>=count;
+}
+function clearSummary(){
+ lastSummaryResult=null;summaryPage=0;summaryContext='';$('#summary-search').value='';$('#summary-table').replaceChildren();$('#summary-result-count').textContent='';$('#summary-pagination').classList.add('hidden');syncSummaryActions();
+}
+function invalidateDataTables(){$('#preview-table').replaceChildren();clearSummary();}
+function renderSummary(){
+ if(!lastSummaryResult)return;
+ const matches=summaryMatches(),total=matches.length,keys=Object.keys(lastSummaryResult.columns);
+ summaryPage=Math.min(summaryPage,Math.max(0,Math.ceil(total/SUMMARY_PAGE_SIZE)-1));
+ const start=summaryPage*SUMMARY_PAGE_SIZE,indices=matches.slice(start,start+SUMMARY_PAGE_SIZE);
+ $('#summary-table').innerHTML=indices.length?`<div class="table-wrap"><table><thead><tr>${keys.map(key=>`<th>${esc(key)}</th>`).join('')}</tr></thead><tbody>${indices.map(index=>`<tr>${keys.map(key=>`<td>${esc(lastSummaryResult.columns[key][index])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<p class="field-help">No numeric signals match this search.</p>';
+ $('#summary-result-count').textContent=`${fmt(total)} of ${fmt(lastSummaryResult.rowCount)} numeric signals`;
+ $('#summary-page-status').textContent=`${fmt(total?start+1:0)}–${fmt(Math.min(start+SUMMARY_PAGE_SIZE,total))} of ${fmt(total)}`;
+ $('#summary-pagination').classList.toggle('hidden',!lastSummaryResult.rowCount);syncSummaryActions();
+}
+function dataContext(){return JSON.stringify([filters(),analysisOptions()]);}
 function exportChartData(index){
  if(busy||dirty)return;
  const view=panelView(),result=view?lastPanelResults[index]?.result:lastResult;
@@ -548,7 +618,7 @@ $('#plot-grid').addEventListener('click',event=>{
  const imageButton=event.target.closest(`[data-${view.slug}-image]`);if(imageButton&&imageButton.id!=='image-export')exportChartImage(Number(imageButton.getAttribute(`data-${view.slug}-image`)));
 });
 function changeMode(mode){if(busy)return;capture();state.plot_type=mode;renderOptions();setDirty(true);task(updateChart);}
-$('#file-input').addEventListener('change',event=>{if(event.target.files[0])importFile(event.target.files[0]);});
+$('#file-input').addEventListener('change',event=>{const file=event.target.files[0];event.target.value='';if(file)importFile(file);});
 for(const id of ['welcome-open','replace-file'])$(`#${id}`).onclick=()=>$('#file-input').click();
 $('#file-drop').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('#file-input').click();}});
 for(const eventName of ['dragenter','dragover'])$('#file-drop').addEventListener(eventName,event=>{event.preventDefault();if(!busy)$('#file-drop').classList.add('drag-over');});
@@ -572,8 +642,9 @@ $('#app').addEventListener('change',event=>{
   }
   setDirty(true);return;
  }
- if(event.target.dataset.dateBound){if(!busy){capture();setDirty(true);}return;}
+ if(event.target.dataset.dateBound){if(!busy){capture();invalidateDataTables();setDirty(true);}return;}
  const key=event.target.dataset.key;if(!key||busy)return;capture();
+ if(key.startsWith('flt2_')||key.startsWith('setup_'))invalidateDataTables();
  if(['setup_time_mode','setup_profile','setup_tz_mode','setup_assume_tz','setup_out_tz'].includes(key))renderAxis();
  if(key==='distribution_shared_bins'){
   renderOptions();
@@ -582,7 +653,7 @@ $('#app').addEventListener('change',event=>{
 });
 $('#app').addEventListener('input',event=>{
  if(busy||!schema||event.target.tagName!=='INPUT')return;
- if(event.target.dataset.key||event.target.dataset.panelKey||event.target.dataset.dateBound){capture();setDirty(true);}
+ if(event.target.dataset.key||event.target.dataset.panelKey||event.target.dataset.dateBound){capture();if(event.target.dataset.dateBound||/^(flt2_|setup_)/.test(event.target.dataset.key??''))invalidateDataTables();setDirty(true);}
 });
 $('#settings-button').onclick=()=>setSidebar(!document.body.classList.contains('sidebar-open'));
 $('#close-sidebar').onclick=()=>setSidebar(false);$('#sidebar-backdrop').onclick=()=>setSidebar(false);
@@ -593,16 +664,19 @@ document.addEventListener('keydown',event=>{
 });
 $('.button-label').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('#config-input').click();}});
 $('#add-filter').onclick=()=>{capture();if(state.flt2_n>=10){status('You can combine up to 10 filters.','error');return;}const i=state.flt2_n++;state[`flt2_logic_${i}`]='AND';state[`flt2_var_${i}`]=names()[0];renderFilters();refreshView();setDirty(true);};
-$('#clear-filters').onclick=()=>{for(const k of Object.keys(state))if(k.startsWith('flt2_'))delete state[k];state.flt2_n=0;renderFilters();refreshView();setDirty(true);task(updateChart);};
-$('#filters').addEventListener('click',e=>{const button=e.target.closest('[data-remove-filter]');if(!button)return;capture();const at=Number(button.dataset.removeFilter),next={};for(const [key,value]of Object.entries(state)){if(!key.startsWith('flt2_')||key==='flt2_n'){next[key]=value;continue;}const match=key.match(/_(\d+)$/);if(match){const i=Number(match[1]);if(i===at)continue;next[key.replace(/_\d+$/,`_${i>at?i-1:i}`)]=value;}}state=next;state.flt2_n=Math.max(0,state.flt2_n-1);renderFilters();refreshView();setDirty(true);});
+$('#clear-filters').onclick=()=>{for(const k of Object.keys(state))if(k.startsWith('flt2_'))delete state[k];state.flt2_n=0;renderFilters();refreshView();invalidateDataTables();setDirty(true);task(updateChart);};
+$('#filters').addEventListener('click',e=>{const button=e.target.closest('[data-remove-filter]');if(!button)return;capture();const at=Number(button.dataset.removeFilter),next={};for(const [key,value]of Object.entries(state)){if(!key.startsWith('flt2_')||key==='flt2_n'){next[key]=value;continue;}const match=key.match(/_(\d+)$/);if(match){const i=Number(match[1]);if(i===at)continue;next[key.replace(/_\d+$/,`_${i>at?i-1:i}`)]=value;}}state=next;state.flt2_n=Math.max(0,state.flt2_n-1);renderFilters();refreshView();invalidateDataTables();setDirty(true);});
 $('#save-config').onclick=()=>{try{capture();const config=encodeConfig(!schema&&pendingSettings?pendingSettings:state);download(new Blob([config],{type:'application/json'}),'tsplotter-settings.json');savedConfig=config;syncWorkspaceSettings();status('Plot settings saved. Your dataset is not included.');}catch(e){status(e.message,'error');}};
-$('#config-input').onchange=async e=>{try{const file=e.target.files[0];if(!file)return;const loaded=decodeConfig(await file.text());const sampling=Object.keys(loaded.settings).some(k=>k.endsWith('_maxpts'));if(schema){capture();const next=normalizeConfiguration(loaded.settings,schema);state={...defaultSettings(schema),...next.settings};savedConfig=encodeConfig(state);activePanels={};renderAxis();renderOptions();renderFilters();const applied=await task(updateChart);if(!applied)return;if(loaded.warnings.length||next.warnings.length||sampling)status(`Settings loaded. ${[...loaded.warnings,...next.warnings,sampling?'Legacy point limits were ignored; every selected point is retained.':''].filter(Boolean).join(' ')}`);}else{pendingSettings=loaded.settings;savedConfig=encodeConfig(loaded.settings);syncWorkspaceSettings();status('Settings loaded. Open your dataset to apply them.');}}catch(error){status(error.message,'error');}};
+$('#config-input').onchange=async e=>{try{const file=e.target.files[0];e.target.value='';if(!file)return;const loaded=decodeConfig(await file.text());const sampling=Object.keys(loaded.settings).some(k=>k.endsWith('_maxpts'));if(schema){capture();const next=normalizeConfiguration(loaded.settings,schema);state={...defaultSettings(schema),...next.settings};savedConfig=encodeConfig(state);activePanels={};renderAxis();renderOptions();renderFilters();const applied=await task(updateChart);if(!applied)return;if(loaded.warnings.length||next.warnings.length||sampling)status(`Settings loaded. ${[...loaded.warnings,...next.warnings,sampling?'Legacy point limits were ignored; every selected point is retained.':''].filter(Boolean).join(' ')}`);}else{pendingSettings=loaded.settings;savedConfig=encodeConfig(loaded.settings);syncWorkspaceSettings();status('Settings loaded. Open your dataset to apply them.');}}catch(error){status(error.message,'error');}};
 $('#clear-recovery').onclick=()=>{try{clearWorkspace(window.localStorage);recoveryAvailable=false;recoverySuppressed=true;recoveryProblem='Recovery cleared. A new edit will start recovery again.';if(!schema){pendingSettings=null;savedConfig=null;state=defaultSettings();renderAxis();renderOptions();}syncWorkspaceSettings();syncActions();}catch{status('Device recovery could not be cleared.','error');}};
 $('#chart-export').onclick=()=>exportChartData(0);
-$('#data-export').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();status('Preparing the full filtered CSV on this device…','busy');const result=await engine.query({...analysisOptions(),mode:'export',x:xColumn(),filters:filters()});renderRowSummary(result);download(csv(result),'filtered_dataset.csv');status(`Ready · ${fmt(result.rowCount)} rows exported locally.${dirty?' Chart changes remain unapplied.':''}`);});
-$('#preview-button').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();const result=await engine.query({...analysisOptions(),mode:'preview',x:xColumn(),filters:filters(),limit:100});renderRowSummary(result);$('#preview-table').innerHTML=table(result);status(`Ready · preview loaded; all rows remain available for analysis.${dirty?' Chart changes remain unapplied.':''}`);});
-$('#summary-button').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();const result=await engine.summary(filters(),analysisOptions());renderRowSummary(result);$('#summary-table').innerHTML=table(result);status(`Ready · statistics calculated from all selected rows.${dirty?' Chart changes remain unapplied.':''}`);});
+$('#data-export').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();status('Preparing the full filtered CSV on this device…','busy');const result=await engine.exportCSV(filters(),{...analysisOptions(),x:xColumn()});renderRowSummary(result);download(result.blob,'filtered_dataset.csv');status(`Ready · ${fmt(result.rowCount)} rows exported locally.${dirty?' Chart changes remain unapplied.':''}`);});
+$('#preview-button').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();const result=await engine.query({...analysisOptions(),mode:'preview',x:xColumn(),filters:filters(),columns:names().slice(0,30),limit:100});renderRowSummary(result);$('#preview-table').innerHTML=table(result);status(`Ready · preview loaded; all rows remain available for analysis.${dirty?' Chart changes remain unapplied.':''}`);});
+$('#summary-button').onclick=()=>task(async()=>{capture();syncWorkspaceSettings();const context=dataContext();const result=lastSummaryResult&&summaryContext===context?lastSummaryResult:await engine.summary(filters(),analysisOptions());renderRowSummary(result);lastSummaryResult=result;summaryContext=context;summaryPage=0;renderSummary();status(`Ready · statistics calculated from all selected rows for ${fmt(result.rowCount)} numeric signals.${dirty?' Chart changes remain unapplied.':''}`);});
+$('#summary-search').addEventListener('input',()=>{summaryPage=0;renderSummary();});
+$('#summary-prev').onclick=()=>{summaryPage=Math.max(0,summaryPage-1);renderSummary();};
+$('#summary-next').onclick=()=>{summaryPage++;renderSummary();};
 $('#image-export').onclick=()=>exportChartImage(0);
-$('#cancel-button').onclick=()=>{engine.cancel();schema=null;resetPlotOutputs();setBusy(false);$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');status('Analysis cancelled. Reopen your local file to continue.');};
+$('#cancel-button').onclick=()=>{engine.cancel();schema=null;clearSummary();resetPlotOutputs();setBusy(false);$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');status('Analysis cancelled. Reopen your local file to continue.');};
 window.addEventListener('pagehide',()=>{capture();syncWorkspaceSettings();});
 initializeRecovery();renderAxis();renderOptions();setSidebar(false,{focus:false});syncActions();

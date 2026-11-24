@@ -5,6 +5,9 @@ let internalRow = '__plotter_internal_row__';
 let database, connection, databaseWorker, sourceMeta;
 const loadedExtensions = new Set();
 const categoryDomainCache = new Map();
+const timezoneFormatters = new Map();
+export const SUMMARY_BATCH_SIZE = 8;
+export const CSV_CHUNK_BYTES = 64 * 1024;
 const NUMERIC = /^(U?TINYINT|U?SMALLINT|U?INTEGER|U?BIGINT|HUGEINT|UHUGEINT|FLOAT|DOUBLE|DECIMAL|REAL|INT\d*|UINT\d*)/i;
 const DATETIME = /^(TIMESTAMP|DATE|TIME)/i;
 
@@ -124,7 +127,11 @@ export function inDisplayTimezone(value, timezone) {
   if (value == null || !timezone || ['preserve', '(preserve)', '(keep)'].includes(timezone)) return value;
   const date = new Date(value);
   if (!Number.isFinite(date.valueOf())) return value;
-  const formatter = new Intl.DateTimeFormat('en-CA', {timeZone: timezone, year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'longOffset'});
+  let formatter = timezoneFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {timeZone: timezone, year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23',timeZoneName:'longOffset'});
+    timezoneFormatters.set(timezone, formatter);
+  }
   const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]));
   const zone = parts.timeZoneName.replace('GMT', '') || '+00:00';
   const milliseconds = String(date.getUTCMilliseconds()).padStart(3, '0');
@@ -185,6 +192,76 @@ async function rowAccounting(spec) {
   return {rows, seriesCounts, totalRows: eligible};
 }
 
+/** Bound aggregate/Parquet scan width while still summarizing every numeric field. */
+export function buildSummaryQueries(spec, columns, rowColumn = internalRow) {
+  const {where} = baseSQL(spec, columns, rowColumn);
+  const numeric = columns.filter(column => column.kind === 'numeric');
+  const batches = [];
+  for (let offset = 0; offset < numeric.length; offset += SUMMARY_BATCH_SIZE) {
+    const batch = numeric.slice(offset, offset + SUMMARY_BATCH_SIZE);
+    const aggregates = batch.flatMap((column, index) => {
+      const value = numericField(column.name, columns, rowColumn);
+      return [`count(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_valid`,
+        ...[['min', 'min'], ['max', 'max'], ['mean', 'avg'], ['stddev', 'stddev_samp']].map(([name, fn]) =>
+          `${fn}(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_${name}`)];
+    });
+    batches.push({columns: batch.map(column => column.name), sql: `SELECT ${aggregates.join(', ')} FROM ${TABLE} WHERE ${where}`});
+  }
+  return batches;
+}
+
+async function summaryUsableRows(spec, batches, valid, totalRows) {
+  if (!totalRows || valid.every(count => count === 0)) return 0;
+  if (valid.some(count => count === totalRows)) return totalRows;
+  const seen = new Uint8Array(Math.ceil(sourceMeta.rowCount / 8));
+  const {where} = baseSQL(spec, sourceMeta.columns, internalRow);
+  let usable = 0;
+  for (const batch of batches) {
+    if (usable === totalRows) break;
+    const finiteValues = batch.columns.map(name => finite(numericField(name, sourceMeta.columns))).join(' OR ');
+    const reader = await connection.send(`SELECT ${quoteIdentifier(internalRow)} AS source_row FROM ${TABLE} WHERE ${where} AND (${finiteValues})`, true);
+    for await (const rows of reader) {
+      const ids = rows.getChild('source_row');
+      for (let index = 0; index < rows.numRows; index++) {
+        const row = Number(ids.get(index)), byte = Math.floor(row / 8), bit = 1 << (row % 8);
+        if (!(seen[byte] & bit)) { seen[byte] |= bit; usable++; }
+      }
+    }
+  }
+  return usable;
+}
+
+export function csvCell(value, type = '') {
+  const converted = scalar(value, type);
+  const text = converted == null ? '' : typeof converted === 'object' ? JSON.stringify(converted) : String(converted);
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+/** Keep only output Blob bytes and one bounded encoding buffer, never all CSV strings. */
+export class CSVBlobWriter {
+  constructor(chunkBytes = CSV_CHUNK_BYTES) {
+    if (!Number.isInteger(chunkBytes) || chunkBytes < 4) throw new Error('CSV chunk size must be at least four bytes.');
+    this.buffer = new Uint8Array(chunkBytes); this.length = 0; this.parts = []; this.encoder = new TextEncoder();
+  }
+  flush() {
+    if (this.length) this.parts.push(new Blob([this.buffer.subarray(0, this.length)]));
+    this.length = 0;
+  }
+  write(value) {
+    let text = String(value);
+    while (text.length) {
+      const {read, written} = this.encoder.encodeInto(text, this.buffer.subarray(this.length));
+      this.length += written; text = text.slice(read);
+      if (!read || this.length === this.buffer.length) this.flush();
+    }
+  }
+  finish() {
+    this.flush();
+    const blob = new Blob(this.parts, {type: 'text/csv;charset=utf-8'}); this.parts = [];
+    return blob;
+  }
+}
+
 /** Build complete chart queries. LIMIT appears only in explicitly requested preview mode. */
 export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
   const mode = spec.mode ?? 'trends';
@@ -193,7 +270,7 @@ export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
   const row = quoteIdentifier(rowColumn);
   if (mode === 'export' || mode === 'preview') {
     const selected = spec.columns?.length ? spec.columns : columns.map(c => c.name);
-    const sql = `SELECT ${selected.map(name => `${field(name, columns, rowColumn)} AS ${quoteIdentifier(name)}`).join(', ')} FROM ${TABLE} WHERE ${where} ORDER BY ${row}`;
+    const sql = `SELECT ${selected.map(name => `${field(name, columns, rowColumn)} AS ${quoteIdentifier(name)}`).join(', ')} FROM ${TABLE} WHERE ${where}${spec.stream || mode === 'preview' ? '' : ` ORDER BY ${row}`}`;
     return mode === 'preview' ? `${sql} LIMIT ${integer(spec.limit, 100, 1, 1000)}` : sql;
   }
   if (!y.length) throw new Error('Choose at least one numeric signal.');
@@ -223,19 +300,28 @@ export function buildQuerySQL(spec, columns, rowColumn = internalRow) {
     return `SELECT ${[xProjection, `${value} AS ${quoteIdentifier(signal)}`, ...rolls].join(', ')} FROM ${TABLE} WHERE ${where} AND ${xExpr} IS NOT NULL ORDER BY ${order}`;
   }
   if (mode === 'derivatives') {
-    const xKind = columns.find(c => c.name === xName)?.kind;
+    const xColumn = columns.find(c => c.name === xName), xKind = xColumn?.kind;
     const validAxis = xName === ROW_COLUMN || xKind === 'numeric' ? finite(`TRY_CAST(${xExpr} AS DOUBLE)`) : `${xExpr} IS NOT NULL`;
     const datetime = xKind === 'datetime' || Boolean(spec.timeAxis && Object.keys(spec.timeAxis).length && !['relative', 'preserve', 'raw', 'none'].includes(spec.timeAxis.profile));
     const unit = spec.derivativeUnit ?? 'sample';
     const divisors = {seconds: 1, minutes: 60, hours: 3600, days: 86400};
     let spacing = `CAST(row_number() OVER (ORDER BY ${order}) - 1 AS DOUBLE)`;
+    let delta = 'dx - lag(dx) OVER w';
     if (unit !== 'sample' && unit !== 'none (sample index)' && unit !== 'index step (1)') {
-      spacing = datetime ? `epoch(${xExpr}) / ${divisors[unit] ?? 1}` : `TRY_CAST(${xExpr} AS DOUBLE)`;
+      if (datetime) {
+        const nanoseconds = /^TIMESTAMP_NS$/i.test(xColumn?.type ?? '') && xExpr === field(xName, columns, rowColumn);
+        const resolution = nanoseconds ? 1e9 : 1e6;
+        spacing = `CAST(${nanoseconds ? 'epoch_ns' : 'epoch_us'}(${xExpr}) AS HUGEINT)`;
+        // Subtract exact integer instants before converting units. Dividing
+        // absolute floating epochs first loses short intervals and amplifies
+        // that cancellation in the second derivative.
+        delta = `CAST(dx - lag(dx) OVER w AS DOUBLE) / ${resolution * (divisors[unit] ?? 1)}`;
+      } else spacing = `TRY_CAST(${xExpr} AS DOUBLE)`;
     }
     const smooth = integer(spec.smoothWindow, 1, 1, 9999);
     const d1Name = quoteIdentifier(`${signal}__d1`), d2Name = quoteIdentifier(`${signal}__d2`);
-    const d1Expr = '(v - lag(v) OVER w) / nullif(dx - lag(dx) OVER w, 0)';
-    const d2Expr = '(d1 - lag(d1) OVER w) / nullif(dx - lag(dx) OVER w, 0)';
+    const d1Expr = `(v - lag(v) OVER w) / nullif(${delta}, 0)`;
+    const d2Expr = `(d1 - lag(d1) OVER w) / nullif(${delta}, 0)`;
     const orderDerived = 'ORDER BY __order';
     const result1 = smooth > 1 ? `CASE WHEN __order > 1 THEN avg(d1) OVER (${orderDerived} ROWS BETWEEN ${smooth - 1} PRECEDING AND CURRENT ROW) END` : 'd1';
     const result2 = smooth > 1 ? `CASE WHEN __order > 2 THEN avg(d2) OVER (${orderDerived} ROWS BETWEEN ${smooth - 1} PRECEDING AND CURRENT ROW) END` : 'd2';
@@ -325,8 +411,9 @@ async function initialize(options = {}) {
   await database.instantiate(bundle.mainModule, bundle.pthreadWorker);
   await database.open({path: ':memory:', query: {castBigIntToDouble: false, castDecimalToDouble: true, castTimestampToDate: true}});
   connection = await database.connect();
+  if (options.memoryLimit !== undefined) await connection.query(`SET memory_limit = ${quoteValue(options.memoryLimit)}`);
   // File operations can only use explicitly registered browser files. No remote scan SQL.
-  await connection.query(`SET custom_extension_repository = ${quoteValue(`${base}extensions/duckdb-wasm`)}; SET autoinstall_known_extensions = false; SET autoload_known_extensions = false;`);
+  await connection.query(`SET custom_extension_repository = ${quoteValue(`${base}extensions/duckdb-wasm`)}; SET autoinstall_known_extensions = false; SET autoload_known_extensions = false; SET preserve_insertion_order = true;`);
 }
 async function loadExtension(name) {
   if (loadedExtensions.has(name)) return;
@@ -355,7 +442,8 @@ function tableColumns(table) {
   const columns = {};
   for (const field of table.schema.fields) {
     const vector = table.getChild(field.name);
-    columns[field.name] = Array.from({length: table.numRows}, (_, index) => scalar(vector.get(index), field.type.toString()));
+    const type = field.type.toString();
+    columns[field.name] = Array.from({length: table.numRows}, (_, index) => scalar(vector.get(index), type));
   }
   return columns;
 }
@@ -431,23 +519,60 @@ async function importRows(rows, options = {}) {
 async function summary(filters = [], options = {}) {
   if (!sourceMeta) throw new Error('Import a dataset first.');
   if (options.preparedAxis?.timeAxis?.timezone || options.timeAxis?.timezone || filters.some(condition => condition.timeAxis?.timezone)) await loadExtension('icu');
-  const {where} = baseSQL({...options, filters}, sourceMeta.columns, internalRow);
   const numeric = sourceMeta.columns.filter(col => col.kind === 'numeric');
-  const accounting = await rowAccounting({...options, filters, mode: 'summary', y: numeric.map(column => column.name)});
+  const spec = {...options, filters};
+  // Counts depend only on filters/time preparation. Per-series validity is already
+  // produced by the bounded statistics queries, so do not scan every field twice.
+  const accounting = await rowAccounting({...spec, mode: 'export', y: []});
   const {totalRows} = accounting;
   const columns = {column: [], count: [], valid: [], min: [], max: [], mean: [], stddev: []};
-  if (numeric.length) {
-    const aggregates = numeric.flatMap((col, index) => {
-      const value = numericField(col.name, sourceMeta.columns);
-      return [`count(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_valid`, `min(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_min`, `max(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_max`, `avg(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_mean`, `stddev_samp(${value}) FILTER (WHERE isfinite(${value})) AS s${index}_stddev`];
-    });
-    const data = await queryColumns(`SELECT ${aggregates.join(', ')} FROM ${TABLE} WHERE ${where}`);
-    numeric.forEach((col, index) => {
-      columns.column.push(col.name); columns.count.push(totalRows);
+  const seriesCounts = {}, batches = buildSummaryQueries(spec, sourceMeta.columns);
+  for (const batch of batches) {
+    progress(`Calculating summary signals ${columns.column.length + 1}–${columns.column.length + batch.columns.length} of ${numeric.length}…`);
+    const data = await queryColumns(batch.sql);
+    batch.columns.forEach((name, index) => {
+      columns.column.push(name); columns.count.push(totalRows);
       for (const stat of ['valid','min','max','mean','stddev']) columns[stat].push(data[`s${index}_${stat}`][0]);
+      const usable = Number(data[`s${index}_valid`][0]);
+      seriesCounts[name] = {usable, excludedValues: totalRows - usable};
     });
   }
-  return {columns, rowCount: numeric.length, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind:'summary', rows: accounting.rows, seriesCounts: accounting.seriesCounts, invalidXRows: accounting.rows.invalidTime}};
+  const usable = await summaryUsableRows(spec, batches.filter(batch => batch.columns.some(name => seriesCounts[name].usable)), columns.valid, totalRows);
+  const rows = {...accounting.rows, usable, excludedValues: totalRows - usable};
+  return {columns, rowCount: numeric.length, totalRows, sourceRows: sourceMeta.rowCount, meta: {kind:'summary', rows, seriesCounts, invalidXRows: rows.invalidTime}};
+}
+
+async function exportCSV(filters = [], options = {}) {
+  if (!sourceMeta) throw new Error('Import a dataset first.');
+  if (options.preparedAxis?.timeAxis?.timezone || options.timeAxis?.timezone || filters.some(condition => condition.timeAxis?.timezone)) await loadExtension('icu');
+  // A projection/filter preserves the registered file's scan order. Avoid the
+  // redundant full-width sort so DuckDB can deliver bounded Arrow batches.
+  const spec = {...options, filters, mode: 'export', y: [], stream: true};
+  const sql = buildQuerySQL(spec, sourceMeta.columns);
+  const accounting = await rowAccounting(spec);
+  const names = spec.columns?.length ? spec.columns : sourceMeta.columns.map(column => column.name);
+  const xName = spec.x || ROW_COLUMN, outputTimezone = spec.timeAxis?.outputTimezone;
+  const writer = new CSVBlobWriter();
+  writer.write(names.map(name => csvCell(name)).join(','));
+  const reader = await connection.send(sql, true);
+  let rowCount = 0;
+  for await (const batch of reader) {
+    const fields = batch.schema.fields.map(field => ({vector: batch.getChild(field.name), type: field.type.toString(), displayTimezone: field.name === xName && outputTimezone}));
+    const cells = Array(fields.length);
+    for (let index = 0; index < batch.numRows; index++) {
+      for (let column = 0; column < fields.length; column++) {
+        const field = fields[column], value = field.vector.get(index);
+        cells[column] = field.displayTimezone
+          ? csvCell(inDisplayTimezone(scalar(value, field.type), field.displayTimezone))
+          : csvCell(value, field.type);
+      }
+      writer.write('\r\n' + cells.join(','));
+    }
+    rowCount += batch.numRows;
+    progress(`Preparing full CSV: ${rowCount.toLocaleString()} of ${accounting.totalRows.toLocaleString()} rows…`);
+  }
+  return {blob: writer.finish(), rowCount, totalRows: accounting.totalRows, sourceRows: sourceMeta.rowCount,
+    meta: {kind: 'export', sampling: false, rows: accounting.rows, seriesCounts: {}, invalidXRows: accounting.rows.invalidTime}};
 }
 
 async function distribution(spec) {
@@ -569,8 +694,9 @@ export async function handleEngineMessage(message) {
     case 'importFile': return importFile(...args);
     case 'importRows': return importRows(...args);
     case 'summary': return summary(...args);
+    case 'exportCSV': return exportCSV(...args);
     case 'query': return query(...args);
-    case 'close': await connection?.close(); await database?.terminate(); databaseWorker?.terminate(); connection = database = sourceMeta = undefined; loadedExtensions.clear(); categoryDomainCache.clear(); return {closed: true};
+    case 'close': await connection?.close(); await database?.terminate(); databaseWorker?.terminate(); connection = database = sourceMeta = undefined; loadedExtensions.clear(); categoryDomainCache.clear(); timezoneFormatters.clear(); return {closed: true};
     default: throw new Error(`Unknown local-engine operation: ${method}`);
   }
 }

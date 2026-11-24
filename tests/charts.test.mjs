@@ -117,7 +117,10 @@ test('independent bin metadata controls ordered guides, including collision-safe
  const markerGuides=new Map(figure.data.filter(trace=>trace.meta?.encoding==='marker').map(trace=>[trace.name,trace.marker.symbol]));
  assert.deepEqual(points.marker.color,[colorGuides.get(colorLabels[2]),colorGuides.get(colorLabels[0]),colorGuides.get(colorLabels[2]),colorGuides.get(colorLabels[2])]);
  assert.deepEqual(points.marker.symbol,[markerGuides.get(markerLabels[1]),markerGuides.get(markerLabels[0]),markerGuides.get(markerLabels[1]),markerGuides.get(markerLabels[1])]);
- assert.deepEqual(points.customdata[0],[22,colorLabels[2],markerLabels[1]]);
+ assert.deepEqual(points.customdata[0],[colorLabels[2],markerLabels[1]]);
+ assert.match(points.hovertemplate,/x: %\{x\}/); // The raw grouping value is already the X coordinate.
+ assert.match(points.hovertemplate,/Color interval: %\{customdata\[0\]\}/);
+ assert.match(points.hovertemplate,/Marker interval: %\{customdata\[1\]\}/);
  assert.deepEqual(figure.scatterGroups.color,result.columns.__color_group_);
  assert.deepEqual(figure.scatterGroups.marker,result.columns.__marker_group);
  const guide=figure.data.find(trace=>trace.meta?.encoding==='color');
@@ -270,7 +273,7 @@ test('Rolling instances independently query windows and render their own signal 
  const figures=[0,1].map(index=>buildFigure({columns},settings,'time',index));
  assert.deepEqual(figures[0].data[0].y,[4,null,6]);assert.deepEqual(figures[1].data[0].y,[1,3,2]);
  assert.equal(figures[0].data[0].marker.size,4);assert.equal(figures[1].data[0].marker.size,11);
- assert.equal(figures[0].data[2].fill,undefined);assert.equal(figures[1].data[2].fill,'tonexty');
+ assert.ok(!figures[0].data.some(trace=>trace.meta?.rollingBand));assert.equal(figures[1].data.at(-1).fill,'toself');
  assert.equal(figures[0].layout.xaxis.showspikes,false);assert.equal(figures[1].layout.xaxis.showspikes,true);
  assert.notEqual(figures[0].layout.uirevision,figures[1].layout.uirevision);assert.deepEqual(settings,before);
  assert.throws(()=>chartRequest(settings,'time',[],2),/Rolling panel 3/);assert.throws(()=>buildFigure({columns},settings,'time',2),/Rolling panel 3/);
@@ -342,4 +345,84 @@ test('bin ordinals reserve empty intervals and distinguish every bin within pale
  const sparse=buildFigure({columns:{x:[2.5,3.5],y:[3,4],color_bin:labels.slice(2),marker_bin:labels.slice(2)},meta:{groups}},settings,'x');
  assert.deepEqual(sparse.data[0].marker.color,a.data[0].marker.color.slice(2));assert.deepEqual(sparse.data[0].marker.symbol,a.data[0].marker.symbol.slice(2));
  assert.deepEqual(sparse.data.filter(trace=>trace.meta?.encoding==='color').map(trace=>trace.name),labels.slice(2));
+});
+
+test('all high-volume analysis traces retain 315034 points and original gaps',()=>{
+ const count=315034,gap=157501;
+ const columns={x:Float64Array.from({length:count},(_,index)=>index),y:Array.from({length:count},(_,index)=>index===gap?null:2*index+1)};
+ for(const [suffix,offset]of [['roll_min',-2],['roll_max',2],['roll_mean',0],['d1',1],['d2',0]]){
+  columns[`y__${suffix}`]=columns.y.map((value,index)=>index===0||value===null?null:value+offset);
+ }
+ const settings={
+  ...defaultSettings(schema),trend_panels:[{...defaultTrendPanel(schema),columns:['y']}],
+  rolling_panels:[{...defaultRollingPanel(schema),y:'y',band:true}],
+  derivative_panels:[{...defaultDerivativePanel(schema),y:'y'}],scatter_panels:[scatterPanel()],
+ };
+ const expected={
+  Trends:['y'],Scatter:['y'],'Rolling window':['y','y__roll_min','y__roll_max','y__roll_mean'],Derivatives:['y','y__d1','y__d2'],
+ };
+ for(const [mode,fields]of Object.entries(expected)){
+  const figure=buildFigure({columns,rowCount:count},{...settings,plot_type:mode},'x');
+  assert.equal(figure.data.length,fields.length+(mode==='Rolling window'?1:0));
+  for(const [index,field]of fields.entries()){
+   const trace=figure.data[index];
+   assert.equal(trace.type,'scattergl',`${mode}: full-sized traces use WebGL`);
+   assert.equal(trace.x,columns.x);assert.equal(trace.y,columns[field]);
+   assert.equal(trace.x.length,count);assert.equal(trace.y.length,count);
+   assert.equal(trace.x.at(-1),count-1);assert.equal(trace.y[gap],null);
+   if(mode!=='Scatter'){assert.equal(trace.connectgaps,false);assert.equal(trace.line.simplify,false);}
+  }
+  if(mode==='Rolling window'){
+   assert.equal(figure.data.at(-1).fill,'toself');
+   assert.equal(figure.data.at(-1).fillcolor,'rgba(19,167,155,.12)');
+   assert.equal(figure.data[1].y,columns.y__roll_min);
+   assert.equal(figure.data[2].y,columns.y__roll_max);
+  }
+ }
+});
+
+test('rolling shading closes each finite run and removes only redundant flat-edge vertices',()=>{
+ const columns={x:[0,1,2,3,4,5,6,7,8],y:[1,1,1,null,1,1,1,1,1],
+  y__roll_min:[0,0,0,null,2,2,2,3,3],y__roll_max:[4,4,4,null,5,5,6,6,6],y__roll_mean:[2,2,2,null,3,3,4,4,4]};
+ const figure=buildFigure({columns},{plot_type:'Rolling window',rolling_panels:[{...defaultRollingPanel(schema),y:'y',band:true}]},'x');
+ const band=figure.data.at(-1);
+ assert.deepEqual(band.x,[0,2,2,0,null,4,6,7,8,8,6,5,4,null]);
+ assert.deepEqual(band.y,[0,0,4,4,null,2,2,3,3,6,6,5,5,null]);
+ assert.equal(band.hoverinfo,'skip');assert.equal(band.showlegend,false);
+ assert.equal(band.legendgroup,figure.data[2].legendgroup);
+});
+
+test('supported step shapes keep their interpolation in WebGL while splines remain SVG',()=>{
+ const columns={x:[0,1,2,3],y:[1,null,3,2]};
+ for(const shape of ['linear','hv','vh','hvh','vhv','spline']){
+  const settings={plot_type:'Trends',trend_panels:[{...defaultTrendPanel(schema),columns:['y'],shape}]};
+  const trace=buildFigure({columns},settings,'x').data[0];
+  assert.equal(trace.type,shape==='spline'?'scatter':'scattergl');
+  assert.equal(trace.line.shape,shape);assert.equal(trace.line.simplify,false);
+  assert.equal(trace.connectgaps,false);assert.equal(trace.x,columns.x);assert.equal(trace.y,columns.y);
+ }
+});
+
+test('a shared categorical Scatter field reuses full source values and scalar hover data',()=>{
+ const count=315034,columns={x:Float64Array.from({length:count},(_,index)=>index),y:Float64Array.from({length:count},(_,index)=>index*2),station:Array.from({length:count},(_,index)=>index%2?'North':'South')};
+ const settings=scatterSettings([scatterPanel({color:'station',marker:'station'})]);
+ const figure=buildFigure({columns,rowCount:count,meta:{categoryDomains:{color:['North','South'],marker:['North','South']}}},settings,'x');
+ const trace=figure.data[0];
+ assert.equal(trace.x,columns.x);assert.equal(trace.y,columns.y);
+ assert.equal(trace.customdata,columns.station);
+ assert.equal(figure.scatterGroups.color,columns.station);assert.equal(figure.scatterGroups.marker,columns.station);
+ assert.equal(trace.marker.color.length,count);assert.equal(trace.marker.symbol.length,count);
+ assert.match(trace.hovertemplate,/station: %\{customdata\}/);
+ assert.equal((trace.hovertemplate.match(/station:/g)||[]).length,1);
+ assert.equal(trace.customdata[0],'South');assert.equal(trace.customdata.at(-1),'North');
+ assert.equal(figure.data.filter(item=>item.meta?.scatterGuide).length,4);
+});
+
+test('grouping by a Scatter axis retains the value in hover without duplicate customdata',()=>{
+ const columns={x:[1,2,3],y:[4,5,6]},settings=scatterSettings([scatterPanel({color:'x',colorMode:'continuous',marker:'y'})]);
+ const figure=buildFigure({columns,meta:{colorKind:'numeric',categoryDomains:{marker:[4,5,6]}}},settings,'x');
+ assert.equal(figure.data[0].customdata,undefined);
+ assert.equal(figure.data[0].marker.color,columns.x);
+ assert.match(figure.data[0].hovertemplate,/x: %\{x\}<br>y: %\{y\}/);
+ assert.deepEqual(figure.scatterGroups.marker,['4','5','6']);
 });

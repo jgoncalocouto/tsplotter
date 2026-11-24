@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {quoteIdentifier, quoteValue, columnKind, buildFilterSQL, buildTimeExpression, buildQuerySQL, buildRowAccountingSQL, makeBinEdges, validateBinEdges, assignBins, binLabel, inDisplayTimezone} from '../src/data-worker.js';
+import {quoteIdentifier, quoteValue, columnKind, buildFilterSQL, buildTimeExpression, buildQuerySQL, buildRowAccountingSQL, buildSummaryQueries, SUMMARY_BATCH_SIZE, CSVBlobWriter, csvCell, makeBinEdges, validateBinEdges, assignBins, binLabel, inDisplayTimezone} from '../src/data-worker.js';
 const schema = [{name:'time',type:'TIMESTAMP',kind:'datetime'}, {name:'sensor "A"',type:'DOUBLE',kind:'numeric'}, {name:'value',type:'DOUBLE',kind:'numeric'}, {name:'group',type:'VARCHAR',kind:'categorical'}];
 
 test('identifiers and values are separately escaped', () => {
@@ -75,10 +75,24 @@ test('rolling excluding current uses exactly previous n rows',()=>{
 });
 test('derivatives use backward differences with zero-spacing guard and unsampled outputs',()=>{
   const sql=buildQuerySQL({mode:'derivatives',x:'time',y:['value'],derivativeUnit:'hours',smoothWindow:3},schema);
-  assert.match(sql,/epoch\("time"\) \/ 3600/);
-  assert.match(sql,/\(v - lag\(v\) OVER w\) \/ nullif\(dx - lag\(dx\) OVER w, 0\)/);
-  assert.match(sql,/\(d1 - lag\(d1\) OVER w\) \/ nullif\(dx - lag\(dx\) OVER w, 0\)/);
+  assert.match(sql,/CAST\(epoch_us\("time"\) AS HUGEINT\)/);
+  assert.match(sql,/\(v - lag\(v\) OVER w\) \/ nullif\(CAST\(dx - lag\(dx\) OVER w AS DOUBLE\) \/ 3600000000, 0\)/);
+  assert.match(sql,/\(d1 - lag\(d1\) OVER w\) \/ nullif\(CAST\(dx - lag\(dx\) OVER w AS DOUBLE\) \/ 3600000000, 0\)/);
   assert.match(sql,/__order > 1 THEN avg\(d1\)/); assert.match(sql,/__order > 2 THEN avg\(d2\)/);
+});
+
+test('typed timestamp differences retain precision and numeric/sample spacing keeps its semantics',()=>{
+ const columns=[...schema,{name:'nanoseconds',type:'TIMESTAMP_NS',kind:'datetime'},{name:'day',type:'DATE',kind:'datetime'},{name:'aware',type:'TIMESTAMP WITH TIME ZONE',kind:'datetime'}];
+ for(const name of ['time','day','aware']){
+  const sql=buildQuerySQL({mode:'derivatives',x:name,y:['value'],derivativeUnit:'minutes'},columns);
+  assert.ok(sql.includes(`CAST(epoch_us("${name}") AS HUGEINT)`));assert.match(sql,/CAST\(dx - lag\(dx\) OVER w AS DOUBLE\) \/ 60000000/);
+ }
+ const ns=buildQuerySQL({mode:'derivatives',x:'nanoseconds',y:['value'],derivativeUnit:'seconds'},columns);
+ assert.match(ns,/epoch_ns\("nanoseconds"\)/);assert.match(ns,/AS DOUBLE\) \/ 1000000000/);
+ for(const spec of [{x:'value',derivativeUnit:'numeric'},{x:'time',derivativeUnit:'sample'}]){
+  const sql=buildQuerySQL({mode:'derivatives',y:['value'],...spec},columns);
+  assert.match(sql,/nullif\(dx - lag\(dx\) OVER w, 0\)/);assert.doesNotMatch(sql,/epoch_us|epoch_ns/);
+ }
 });
 test('decimal bin edges do not shift common decimal boundaries',()=>{
   assert.deepEqual(makeBinEdges(0,0.3,{mode:'width',width:0.1}),[0,0.1,0.2,0.3]);
@@ -139,4 +153,29 @@ test('row accounting separates global matching, time preparation, and selected-v
  const matched=sql.match(/SELECT (.*?) AS matched/)[1];assert.doesNotMatch(matched,/TIMESTAMPTZ|IS NOT NULL/);
  assert.match(sql,/TRY_CAST\("time" AS TIMESTAMPTZ\) IS NOT NULL/);
  assert.throws(()=>buildRowAccountingSQL({...spec,y:['missing']},schema),/not in this dataset/);
+});
+
+test('wide summaries cover every numeric field through bounded aggregate queries',()=>{
+ const wide=[{name:'timestamp',type:'TIMESTAMP',kind:'datetime'},...Array.from({length:233},(_,index)=>({name:`signal_${index}`,type:'DOUBLE',kind:'numeric'})),{name:'label',type:'VARCHAR',kind:'categorical'}];
+ const batches=buildSummaryQueries({preparedAxis:{x:'timestamp',timeAxis:{profile:'Auto-detect'}},filters:[{kind:'numeric',column:'signal_0',low:1}]},wide);
+ assert.equal(batches.length,Math.ceil(233/SUMMARY_BATCH_SIZE));assert.deepEqual(batches.flatMap(batch=>batch.columns),wide.filter(column=>column.kind==='numeric').map(column=>column.name));
+ for(const batch of batches){
+  assert.ok(batch.columns.length<=SUMMARY_BATCH_SIZE);assert.ok((batch.sql.match(/ AS s\d+_/g)??[]).length<=SUMMARY_BATCH_SIZE*5);
+  assert.doesNotMatch(batch.sql,/\bLIMIT\b|SAMPLE/i);assert.match(batch.sql,/"signal_0" AS DOUBLE\) >= 1/);assert.match(batch.sql,/"timestamp" AS TIMESTAMPTZ\) IS NOT NULL/);
+ }
+});
+
+test('CSV encoding preserves nulls, exact integers, timestamp strings and escaped data',async()=>{
+ const row=[null,9223372036854775807n,new Date('2026-01-02T03:04:05.678Z'),'a,"b"\r\nc','é😀',{nested:[1,2]}];
+ const expected=',9223372036854775807,2026-01-02T03:04:05.678Z,"a,""b""\r\nc",é😀,"{""nested"":[1,2]}"';
+ const writer=new CSVBlobWriter(7);writer.write(row.map(value=>csvCell(value)).join(','));
+ assert.ok(writer.parts.every(part=>part.size<=7));const blob=writer.finish();assert.equal(await blob.text(),expected);
+ assert.equal(blob.size,new TextEncoder().encode(expected).length);assert.equal(blob.type,'text/csv;charset=utf-8');assert.equal(csvCell(Infinity),'');
+});
+
+test('streamed full exports avoid a blocking wide sort while preserving complete projections',()=>{
+ const sql=buildQuerySQL({mode:'export',stream:true,filters:[{kind:'numeric',column:'value',low:2}]},schema);
+ assert.doesNotMatch(sql,/\bLIMIT\b|ORDER BY|SAMPLE/i);assert.ok(sql.includes('"sensor ""A"""'));assert.match(sql,/"value" AS DOUBLE\) >= 2/);
+ assert.match(buildQuerySQL({mode:'export'},schema),/ORDER BY/);
+ assert.doesNotMatch(buildQuerySQL({mode:'preview',columns:['value'],limit:100},schema),/ORDER BY/);
 });

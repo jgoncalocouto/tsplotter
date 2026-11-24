@@ -55,6 +55,8 @@ Distribution and numeric scatter groups offer **Fit bins on: Filtered data / Ful
 
 Every selected row is available to calculations and charts. There is no downsampling or automatic point limit. A histogram counts all finite observations in its bins. **Matched rows** counts global filter matches before time validation; **Filtered out** counts only filter exclusions; **Invalid time** is reported separately. Each card's expandable row breakdown separates time exclusions from missing/nonfinite selected values and shows usable values per signal. A row is usable for a multi-signal Trend or Distribution if at least one selected signal is usable; Scatter requires all selected axes/group values. Leading derivative nulls are expected calculation boundaries, not source-row exclusions.
 
+Summary statistics cover every numeric signal and are calculated in bounded batches. Search signal names or use the summary's Previous/Next controls to inspect all results; pagination only changes the display. The same summary can be reopened without recalculating until global filters, time preparation or the dataset changes. Full-dataset CSV export streams source rows into local output chunks instead of decoding the entire wide table into the page. Output files still require browser storage/memory proportional to their size.
+
 Large datasets use the user's RAM, CPU and graphics resources. Browsers still have memory and rendering limits; retaining all points does not guarantee that an arbitrarily large chart can be rendered. Parquet permits local column/range reads and usually avoids the largest intermediate file conversions. Excel and MATLAB currently need to decode their selected data into browser memory before passing it to the analysis worker.
 
 ## Supported input formats
@@ -101,6 +103,12 @@ Run these commands from the repository root.
 `npm run build` prepares local DuckDB assets before creating `dist/`. For browser workflow checks, install Chromium once with `npx playwright install chromium`, keep the development server running at `http://127.0.0.1:5173/`, and run `npm run test:browser` in another terminal. Run `node tests/browser-scatter-panels.mjs`, `node tests/browser-distribution-panels.mjs` and `node tests/browser-workspace-consistency.mjs` for panel lifecycles, migrations, independent data tools, recovery, comparison options, row ledgers, exports and mobile layout. Set `BASE_URL` if using a different server URL; set `CHROMIUM_PATH` to use an existing Chromium executable. The configuration/file-format tests cover versions 1–3, unsafe or ambiguous JSON, filter adapters, real Excel workbooks and numeric HDF5 reads.
 
 Dependencies are pinned in `package-lock.json`. SheetJS is obtained from its official distribution; browser file reading does not call SheetJS or another hosted parsing service.
+
+### Reference Parquet regression
+
+The optional real-data workflow uses `tests/MasterLogD4_2_decoded_registers.parquet` (315,034 rows and 234 columns). Keep the supplied file local and run `npm run test:reference` against a running development or preview server. Set `BASE_URL` for a nondefault URL and `CHROMIUM_PATH` to an installed Chrome/Chromium executable, as with the other browser tests. `REFERENCE_PARQUET` can select another location for this fixture. The reference workflow records operation timings, main-renderer heap samples, row/count assertions and failures in a temporary report directory; renderer heap samples do not include DuckDB's worker/WebAssembly memory.
+
+The workflow checks full-data calculations/rendering, all summary signals, filtering and binning, independent panels, settings/recovery, chart interactions and exports. It streams downloaded CSV files through the test verifier instead of loading the full wide export into a second table. Optional `REFERENCE_NATIVE_PROFILE` and `REFERENCE_PROFILE` JSON files provide an independent native-DuckDB numerical reference and private fixture metadata. Neither source rows nor native aggregate values are written into application logs or uploaded by the tests.
 
 ### Reproducible DuckDB assets
 

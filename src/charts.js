@@ -32,6 +32,34 @@ const stableIndex=(source,category,length)=>{
 const seriesColor=name=>COLORS[stableIndex('series',name,COLORS.length)];
 const values=(columns,name)=>columns[name]??[];
 const axis=(i)=>i===0?'':String(i+1);
+// Plotly 3.7 supports these exact line shapes in WebGL.
+// Spline curves still require SVG; never replace their interpolation with lines.
+const GL_LINE_SHAPES=new Set(['linear','hv','vh','hvh','vhv']);
+const categoryRows=column=>column.every(value=>typeof value==='string')?column:Array.from(column,String);
+// A separate closed polygon avoids scattergl's missing tonexty fill on gapped
+// bounds. Only redundant vertices on horizontal edges are removed; every source
+// observation remains in the four analysis traces, with its original gaps.
+function rollingBand(x,low,high){
+ const xx=[],yy=[];
+ const edge=(start,end,step,bound)=>{
+  let a,b;
+  for(let index=start;index!==end;index+=step){
+   const value=bound[index];
+   if(a!==undefined&&b!==undefined&&bound[a]===bound[b]&&bound[b]===value){
+    xx[xx.length-1]=x[index];yy[yy.length-1]=value;b=index;
+   }else{xx.push(x[index]);yy.push(value);a=b;b=index;}
+  }
+ };
+ for(let start=0;start<x.length;){
+  const valid=index=>x[index]!=null&&(typeof x[index]!=='number'||Number.isFinite(x[index]))&&finiteNumber(low[index])&&finiteNumber(high[index]);
+  while(start<x.length&&!valid(start))start++;
+  let end=start;while(end<x.length&&valid(end))end++;
+  if(end-start>1){edge(start,end,1,low);edge(end-1,start-1,-1,high);xx.push(null);yy.push(null);}
+  start=end+1;
+ }
+ return {type:'scatter',mode:'lines',x:xx,y:yy,name:'Rolling range',fill:'toself',fillcolor:'rgba(19,167,155,.12)',
+  line:{width:0,simplify:false},connectgaps:false,hoverinfo:'skip',showlegend:false,legendgroup:'rolling-range',meta:{rollingBand:true}};
+}
 export function buildFigure(result,settings,xName,panelIndex=0){
  const c=result.columns, mode=settings.plot_type??'Trends';
  const traces=[],warnings=[]; let panels=1,scatterGroups;
@@ -46,7 +74,7 @@ export function buildFigure(result,settings,xName,panelIndex=0){
  };
 
  const x=values(c,xName);
- const line=(name,y,i=0,extra={})=>{const suffix=axis(i);traces.push({type:extra.fill||(extra.line?.shape&&extra.line.shape!=='linear')?'scatter':'scattergl',mode:'lines',x,y,name,xaxis:`x${suffix}`,yaxis:`y${suffix}`,connectgaps:false,...extra,line:{color:seriesColor(name),width:2,simplify:false,...extra.line}});};
+ const line=(name,y,i=0,extra={})=>{const suffix=axis(i);traces.push({type:GL_LINE_SHAPES.has(extra.line?.shape??'linear')?'scattergl':'scatter',mode:'lines',x,y,name,xaxis:`x${suffix}`,yaxis:`y${suffix}`,connectgaps:false,...extra,line:{color:seriesColor(name),width:2,simplify:false,...extra.line}});};
  const axes=(n,spikes=true)=>{
   panels=n;layout.height=510+(n-1)*175;
   const gap=n>1?.065:0,panelHeight=(1-gap*(n-1))/n;
@@ -87,8 +115,9 @@ export function buildFigure(result,settings,xName,panelIndex=0){
   const numericColor=result.meta?.colorKind==='numeric'||colorRaw.length>0&&colorRaw.every(finiteNumber);
   const continuous=colorOn&&!colorMeta&&panel.colorMode!=='discrete'&&numericColor;
   if(colorOn&&!colorMeta&&panel.colorMode==='continuous'&&!numericColor)warnings.push('Continuous color needs a numeric column. Categorical colors are being used instead.');
-  const colorRows=colorOn&&!continuous?Array.from(values(c,colorMeta?.column??panel.color),String):[];
-  const markerRows=markerOn?Array.from(values(c,markerMeta?.column??panel.marker),String):[];
+  const colorSource=colorMeta?.column??panel.color,markerSource=markerMeta?.column??panel.marker;
+  const colorRows=colorOn&&!continuous?categoryRows(values(c,colorSource)):[];
+  const markerRows=markerOn?(colorOn&&!continuous&&markerSource===colorSource?colorRows:categoryRows(values(c,markerSource))):[];
   const colorOrder=colorMeta?.labels?.map(String)??[...new Set(colorRows)];
   const markerOrder=markerMeta?.labels?.map(String)??[...new Set(markerRows)];
   const occupiedColors=new Set(colorRows),occupiedMarkers=new Set(markerRows);
@@ -112,14 +141,14 @@ export function buildFigure(result,settings,xName,panelIndex=0){
    marker.colorbar={title:{text:panel.color},thickness:14};layout.margin.r=84;
   }else if(colorOn)marker.color=colorRows.map(category=>colorMap.get(category));
   if(markerOn)marker.symbol=markerRows.map(category=>symbolMap.get(category));
-  const hoverColumns=[...new Set([colorOn?panel.color:undefined,markerOn?panel.marker:undefined].filter(Boolean))];
+  const hoverColumns=[...new Set([colorOn?panel.color:undefined,markerOn?panel.marker:undefined].filter(name=>name&&name!==panel.x&&name!==panel.y))];
   const hoverFields=hoverColumns.map(name=>({name,values:values(c,name)}));
   if(colorMeta)hoverFields.push({name:'Color interval',values:values(c,colorMeta.column)});
   if(markerMeta)hoverFields.push({name:'Marker interval',values:values(c,markerMeta.column)});
   let hovertemplate=`${escapeLabel(panel.x)}: %{x}<br>${escapeLabel(panel.y)}: %{y}`;
-  hoverFields.forEach((field,index)=>{hovertemplate+=`<br>${escapeLabel(field.name)}: %{customdata[${index}]}`;});
+  hoverFields.forEach((field,index)=>{hovertemplate+=`<br>${escapeLabel(field.name)}: %{customdata${hoverFields.length===1?'':`[${index}]`}}`;});
   traces.push({type:'scattergl',mode:'markers',name:panel.title||`Scatter ${panelIndex+1}`,x:xx,y:yy,marker,showlegend:false,
-   customdata:hoverFields.length?Array.from(xx,(_,index)=>hoverFields.map(field=>field.values[index])):undefined,
+   customdata:hoverFields.length===1?hoverFields[0].values:hoverFields.length?Array.from(xx,(_,index)=>hoverFields.map(field=>field.values[index])):undefined,
    hovertemplate:hovertemplate+'<extra></extra>',meta:{scatterPoints:true,panelIndex}});
   for(const [encoding,name,order,occupied,mapping]of[
    ['color',panel.color,colorOrder,occupiedColors,colorMap],['marker',panel.marker,markerOrder,occupiedMarkers,symbolMap],
@@ -142,8 +171,9 @@ export function buildFigure(result,settings,xName,panelIndex=0){
   const y=panel.y;axes(1,panel.spikes);layout.uirevision=`rolling:${panelIndex}:${JSON.stringify([xName,y])}`;
   line(y,values(c,y),0,{mode:'markers',marker:{size:panel.size,opacity:panel.opacity,color:seriesColor(y)}});
   line('Rolling minimum',values(c,`${y}__roll_min`),0,{line:{color:seriesColor(`${y}__roll_min`),width:1}});
-  line('Rolling maximum',values(c,`${y}__roll_max`),0,{...(panel.band?{fill:'tonexty',fillcolor:'rgba(19,167,155,.12)'}:{}),line:{color:seriesColor(`${y}__roll_max`),width:1}});
+  line('Rolling maximum',values(c,`${y}__roll_max`),0,{legendgroup:'rolling-range',line:{color:seriesColor(`${y}__roll_max`),width:1}});
   line('Rolling mean',values(c,`${y}__roll_mean`),0,{line:{color:seriesColor(`${y}__roll_mean`),width:2}});rangeSlider('xaxis',panel.rangeslider);layout.hovermode=panel.unified?'x unified':'closest';
+  if(panel.band)traces.push(rollingBand(x,values(c,`${y}__roll_min`),values(c,`${y}__roll_max`)));
  }else if(mode==='Derivatives'){
   const panel=derivativePanels(settings)[panelIndex];
   if(!panel)throw new Error(`Derivative panel ${panelIndex+1} does not exist.`);

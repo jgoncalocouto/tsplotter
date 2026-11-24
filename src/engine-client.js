@@ -36,6 +36,7 @@ export class DataEngine {
   importRows(rows, options = {}) { return this._call('importRows', [rows, {...this.options, ...options}]); }
   query(spec) { return this._call('query', [spec]); }
   summary(filters = [], options = {}) { return this._call('summary', [filters, options]); }
+  exportCSV(filters = [], options = {}) { return this._call('exportCSV', [filters, options]); }
   cancel() {
     // Terminating the parent worker also terminates its dedicated DuckDB child worker.
     this.worker?.terminate(); this.worker = undefined;

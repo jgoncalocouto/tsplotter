@@ -44,7 +44,8 @@ Panels keep independent settings and exports; filters remain global by design.
 
 1. **Trends:** 1–6 independent panels with signal lists; markers,
    six line shapes, line width, log/linear scale, range slider, unified hover and
-   spikes. Retain gaps. SVG line simplification must be disabled when used.
+   spikes. Retain gaps. Linear and step shapes use WebGL; splines retain SVG
+   interpolation. SVG line simplification must be disabled when used.
 2. **Distribution:** 1–6 independent titled panels with add/duplicate/remove and
    one selected settings editor. Each has its own signals, bin settings and
    CSV/PNG exports; overlays use shared edges within that panel. Automatic
@@ -65,10 +66,14 @@ Panels keep independent settings and exports; filters remain global by design.
    inclusion flag, full-window flag (`min_periods=window` versus 1), min/max band,
    raw markers and hover/range options. Excluding current shifts the input by
    exactly one row before the rolling calculation. Nulls do not become zeros.
+   Render shading as separately closed finite runs so gaps are never bridged;
+   retain all raw/minimum/maximum/mean observations in the analysis traces.
 5. **Derivatives:** 1–6 analyses, each containing three aligned plots for raw/first/second backward differences.
    First derivative begins with null; second begins with two nulls. Respect
    seconds/minutes/hours/days/sample spacing or explicit numeric X. A zero delta
-   produces null. Optional trailing rolling-mean smoothing changes derivatives
+   produces null. Subtract integer timestamp instants before converting time
+   units so short intervals do not lose precision at large calendar dates.
+   Optional trailing rolling-mean smoothing changes derivatives
    only, preserving leading nulls. Keep raw signal unchanged.
 
 ## Numeric groups
@@ -111,6 +116,13 @@ Panels keep independent settings and exports; filters remain global by design.
 - Full export covers the full filtered data. Chart export matches exactly what
   is represented; bins are exported as separate columns, never overwritten axes.
 - Native Plotly zoom, pan, hover, legend toggling and PNG export remain available.
+- Summary statistics include all numeric columns, including those beyond the
+  first display page. Search and pagination do not rerun the analysis. Statistics
+  use bounded column batches; exact usable-row unions include sparse signals.
+- Full CSV export streams source-order Arrow batches into bounded UTF-8 chunks,
+  preserving all filtered rows, source columns, quoting and large integer values.
+  Rendering updates release old graph/results before accumulating replacements;
+  unchanged-axis manual zoom remains available after updating.
 
 ## Row accounting
 
@@ -128,11 +140,17 @@ Panels keep independent settings and exports; filters remain global by design.
 - Selecting and processing a file sends no POST/PUT/PATCH, file content, rows or
   application telemetry over HTTP/WebSockets. Serve dependencies locally.
 - Repeated view switches reuse/purge the Plotly graph so WebGL contexts do not
-  accumulate. A failed import leaves a usable application, not a blank screen.
+  accumulate. Discarded GPU contexts are explicitly released. A failed import
+  leaves a usable application, not a blank screen. Reopening the same local
+  file after cancellation and reapplying the same settings file must work.
 - Test >35,000 and >200,000 rows, beyond former limits; inspect Plotly trace
   arrays, row metrics and exports for exact point counts and endpoints.
 - Test at least one real compressed Parquet file, not only CSV, and inspect all
   network requests while reading/filtering/plotting it.
+- Run `browser-reference-parquet.mjs` with the supplied MasterLog fixture to
+  verify 315,034 rows/234 columns, every numeric summary, broad chart/settings
+  workflows, complete CSV export, timing, errors and main-renderer heap use.
+  Private native references are optional test inputs and are never app assets.
 
 Primary Plotly references: [line.simplify](https://plotly.com/javascript/reference/scatter/#scatter-line-simplify),
 [WebGL context limits](https://plotly.com/javascript/webgl-vs-svg/),
