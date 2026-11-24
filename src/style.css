@@ -727,6 +727,22 @@ select:not([multiple]) {
 .options .wide {
   grid-column:span 2
 }
+.options.trend-layout { align-items:start; }
+.trend-subplots,.trend-subplot-list { min-width:0; }
+.trend-subplot-list { display:grid; gap:10px; }
+.trend-subplot { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:8px; }
+.trend-subplot .field { margin:0; min-width:0; }
+.subplot-row-actions,.subplot-toolbar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.subplot-row-actions { padding-bottom:3px; }
+.subplot-row-actions .text-button { font-size:11px; min-height:30px; padding:4px 5px; }
+.subplot-toolbar { margin-top:8px; }
+.subplot-toolbar .secondary { min-height:31px; padding:5px 9px; font-size:11px; }
+.subplot-toolbar .field-help { margin:0; font-size:11px; }
+.single-subplot .subplot-row-actions .secondary { min-height:33px; padding:5px 9px; font-size:11px; }
+@media(max-width:780px) {
+ .single-subplot .trend-subplot { grid-template-columns:minmax(0,1fr); }
+ .single-subplot .subplot-row-actions { padding:0; }
+}
 .options .field.compact {
   max-width:105px
 }

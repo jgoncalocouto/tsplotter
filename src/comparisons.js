@@ -1,3 +1,5 @@
+import {trendSubplots} from './config.js';
+
 const signalKey=columns=>JSON.stringify([...new Set(columns)].sort());
 
 export function axisRangeNumbers(range,scale){
@@ -11,14 +13,18 @@ export function axisRangeNumbers(range,scale){
 
 /** Axes link only when their variable, units/order, and numeric/time scale agree. */
 export function comparisonAxes(mode,panel,xName,layout,sharedBins=false){
- const axes={};
+ const axes={},trendRows=mode==='Trends'?trendSubplots(panel):[];
  for(const name of Object.keys(layout).filter(key=>/^[xy]axis\d*$/.test(key))){
   const family=name[0],order=Number(name.replace(/^[xy]axis/,'' )||1)-1;
   let key;
   if(family==='x')key=mode==='Scatter'?`field:${panel.x}`:mode==='Distribution'?(sharedBins?'distribution:shared':`distribution:${signalKey(panel.columns)}`):`field:${xName}`;
   else if(mode==='Scatter')key=`field:${panel.y}`;
   else if(mode==='Distribution')key='distribution:count';
-  else if(mode==='Trends')key=`signals:${signalKey(panel.columns)}`;
+  else if(mode==='Trends'){
+   const columns=trendRows[order]?.columns??[];
+   if(!columns.length)continue; // A blank subplot has no vertical variable to compare.
+   key=`signals:${signalKey(columns)}`;
+  }
   else if(mode==='Rolling window')key=`field:${panel.y}`;
   else key=order===0?`field:${panel.y}`:`derivative:${panel.y}:${order}:${panel.timeUnit}:${panel.xMode}`;
   axes[name]={family,key,scale:layout[name].type||'linear'};

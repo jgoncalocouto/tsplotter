@@ -42,10 +42,21 @@ Preview pagination is presentation only and must not affect analysis or exports.
 Every view uses the same Add/Duplicate/Remove panel lifecycle and selected editor.
 Panels keep independent settings and exports; filters remain global by design.
 
-1. **Trends:** 1–6 independent panels with signal lists; markers,
+1. **Trends:** 1–6 independent instances, each with 1–6 stacked subplots and
+   separate signal lists. Subplots share X zoom/pan and retain independent Y
+   domains; the slider and X labels appear on the bottom row. Keep markers,
    six line shapes, line width, log/linear scale, range slider, unified hover and
    spikes. Retain gaps. Linear and step shapes use WebGL; splines retain SVG
    interpolation. SVG line simplification must be disabled when used.
+   Original legacy subplot settings restore within one Trend. Existing flat
+   instance settings become one row per instance; v4 saves preserve both levels.
+   Repeated/style-only Updates reuse loaded data and live GPU contexts. Shared
+   queries load the unique union of selected signals once; each instance keeps
+   its own exact usable-row ledger and full-data CSV projection.
+   Indexed hover must preserve native labels, spikes, source point indices and
+   closest-series selection on linear/logarithmic axes and spline curves.
+   Full-source performance checks exercise actual pointer hover, zoom and pan,
+   including after hiding/restoring a series, without additional data queries.
 2. **Distribution:** 1–6 independent titled panels with add/duplicate/remove and
    one selected settings editor. Each has its own signals, bin settings and
    CSV/PNG exports; overlays use shared edges within that panel. Automatic
@@ -96,8 +107,8 @@ Panels keep independent settings and exports; filters remain global by design.
 - Category colors/symbols and source-series colors remain stable across filters
   and panel ordering. Optional axis linking shares ranges/zoom/reset only for
   compatible variables, scales and derivative units; it performs no data queries.
-- Save/load is versioned and data-free. Version 3 preserves every panel
-  and inactive chart as well as the current view. Accept v1/v2 settings,
+- Save/load is versioned and data-free. Version 4 preserves every instance,
+  Trend subplot and inactive chart as well as the current view. Accept v1/v2/v3 settings,
   migrating distinct Scatter and Grouped scatter plots into independent panels
   and old histogram/analysis settings into their respective panels;
   ignore all legacy `*_maxpts` without sampling.

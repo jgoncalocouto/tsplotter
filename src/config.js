@@ -1,6 +1,6 @@
 /** Portable TSPlotter settings. Dataset bytes and browser file handles are never saved. */
 export const CONFIG_APP = 'tsplotter';
-export const CONFIG_VERSION = 3;
+export const CONFIG_VERSION = 4;
 export const MAX_CONFIG_BYTES = 256 * 1024;
 export const ROW_INDEX = '(row number 0..N-1)';
 export const TIME_INDEX = '(use existing time index)';
@@ -12,6 +12,7 @@ export const PLOT_TYPES = ['Trends', 'Distribution', 'Scatter', 'Rolling window'
 export const MAX_SCATTER_PANELS = 6;
 export const MAX_DISTRIBUTION_PANELS = 6;
 export const MAX_ANALYSIS_PANELS = 6;
+export const MAX_TREND_SUBPLOTS = 6;
 export const BIN_SCOPES = ['Filtered data', 'Full dataset'];
 export const COLORMAPS = ['Viridis', 'Plasma', 'Inferno', 'Magma', 'Cividis', 'Turbo', 'Blues', 'Greens', 'Greys', 'Oranges', 'Purples', 'Reds'];
 export const MARKER_PRESETS = ['Core Shapes', 'Crosshair Set', 'Directional', 'Starburst', 'Minimal Dots'];
@@ -71,7 +72,7 @@ const distributionPanelSpecs = {
   binScope: enumSpec(...BIN_SCOPES),
 };
 const trendPanelSpecs = {
-  title: {...text, maxLength: 80}, columns: strings, shape: specs.mlc_shape, width: specs.mlc_width, ytype: specs.mlc_ytype,
+  title: {...text, maxLength: 80}, subplots: {kind: 'trend-subplots'}, columns: strings, shape: specs.mlc_shape, width: specs.mlc_width, ytype: specs.mlc_ytype,
   markers: bool, rangeslider: bool, unified: bool, spikes: bool,
 };
 const rollingPanelSpecs = {
@@ -85,9 +86,17 @@ const derivativePanelSpecs = {
 const numericColumns = schema => schemaColumns(schema).filter(column => columnKind(column) === 'numeric').map(column => column.name);
 const hasTimeColumn = schema => schemaColumns(schema).some(column => columnKind(column) === 'datetime');
 
-export function defaultTrendPanel(schema = {}, index = 0) {
+export function defaultTrendSubplot(schema = {}, index = 0) {
   const numeric = numericColumns(schema), first = numeric[index] || numeric[0];
-  return {title: `Trends ${index + 1}`, columns: first ? [first] : [], shape: 'linear', width: 2, ytype: 'linear', markers: false, rangeslider: true, unified: true, spikes: true};
+  return {columns: first ? [first] : []};
+}
+export function defaultTrendPanel(schema = {}, index = 0) {
+  return {title: `Trends ${index + 1}`, subplots: [defaultTrendSubplot(schema, index)], shape: 'linear', width: 2, ytype: 'linear', markers: false, rangeslider: true, unified: true, spikes: true};
+}
+/** Runtime rows always own their arrays; an explicit empty row stays empty. */
+export function trendSubplots(panel = {}, schema = {}) {
+  const rows = Array.isArray(panel.subplots) ? panel.subplots : Object.hasOwn(panel, 'columns') ? [{columns: panel.columns}] : [{}];
+  return rows.map((row, index) => ({columns: [...(row.columns ?? defaultTrendSubplot(schema, index).columns)]}));
 }
 export function defaultRollingPanel(schema = {}, index = 0) {
   return {title: `Rolling window ${index + 1}`, y: numericColumns(schema)[0] || '', window: 50, includeCurrent: true, requireFull: false, band: true, unified: true, rangeslider: hasTimeColumn(schema), spikes: true, size: 7, opacity: .7};
@@ -109,14 +118,22 @@ function copyAnalysisPanels(panels, schema, create) {
     return next;
   });
 }
-export function trendPanels(settings = {}, schema = {}) {
-  if (Array.isArray(settings.trend_panels)) return copyAnalysisPanels(settings.trend_panels, schema, defaultTrendPanel);
+function legacyTrendPanels(settings, schema = {}, preserveMissing = false) {
   const indices = Object.keys(settings).flatMap(key => /^mlc_cols_([0-5])$/.test(key) ? [Number(key.slice(-1))] : []);
   const count = settings.mlc_n_subplots ?? (indices.length ? Math.max(...indices) + 1 : 1);
-  return Array.from({length: count}, (_, index) => {
-    const panel = mappedLegacyPanel(settings, defaultTrendPanel(schema, index), trendLegacyFields);
-    panel.columns = [...(settings[`mlc_cols_${index}`] ?? panel.columns)];
-    return panel;
+  const panel = mappedLegacyPanel(settings, defaultTrendPanel(schema), trendLegacyFields);
+  panel.subplots = Array.from({length: count}, (_, index) => {
+    const key = `mlc_cols_${index}`;
+    return Object.hasOwn(settings, key) ? {columns: [...settings[key]]} : preserveMissing ? {} : defaultTrendSubplot(schema, index);
+  });
+  return [panel];
+}
+export function trendPanels(settings = {}, schema = {}) {
+  if (!Array.isArray(settings.trend_panels)) return legacyTrendPanels(settings, schema);
+  return settings.trend_panels.map((panel, index) => {
+    const {columns, ...fields} = panel;
+    const defaults = defaultTrendPanel(schema, index);
+    return {...defaults, ...fields, subplots: trendSubplots(Object.hasOwn(panel, 'subplots') || Object.hasOwn(panel, 'columns') ? panel : defaults, schema)};
   });
 }
 export function rollingPanels(settings = {}, schema = {}) {
@@ -141,9 +158,26 @@ function validateAnalysisPanels(key, value, warnings) {
     const clean = {};
     for (const [field, value] of Object.entries(panel)) {
       if (!Object.hasOwn(definition.fields, field)) warnings.push(`Ignored unsupported setting: ${key}[${index}].${field.slice(0, 100)}.`);
+      else if (key === 'trend_panels' && field === 'subplots') clean.subplots = validateTrendSubplots(value, `trend_panels[${index}].subplots`, warnings);
+      else if (key === 'trend_panels' && field === 'columns') {
+        if (!Object.hasOwn(panel, 'subplots')) clean.subplots = [{columns: validateValue(`trend_panels[${index}].columns`, value, strings)}];
+      }
       else clean[field] = validateValue(`${key}[${index}].${field}`, value, definition.fields[field]);
     }
-    return {...definition.create({}, index), ...clean};
+    // Missing selection is distinct from an intentionally cleared [] until a schema is known.
+    return {...definition.create({}, index), ...(key === 'trend_panels' ? {subplots: [{}]} : {}), ...clean};
+  });
+}
+function validateTrendSubplots(value, key, warnings) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_TREND_SUBPLOTS) throw new Error(`Invalid setting '${key}': use between 1 and ${MAX_TREND_SUBPLOTS} subplots.`);
+  return value.map((subplot, index) => {
+    if (!isObject(subplot)) throw new Error(`Invalid setting '${key}[${index}]': expected a settings object.`);
+    const clean = {};
+    for (const [field, value] of Object.entries(subplot)) {
+      if (field === 'columns') clean.columns = validateValue(`${key}[${index}].columns`, value, strings);
+      else warnings.push(`Ignored unsupported setting: ${key}[${index}].${field.slice(0, 100)}.`);
+    }
+    return clean;
   });
 }
 
@@ -307,7 +341,7 @@ export function validateSettings(settings) {
   if (!Object.hasOwn(clean, 'scatter_panels') && (hasLegacyScatterSettings(clean, 'sc') || hasLegacyScatterSettings(clean, 'sc2'))) clean.scatter_panels = legacyScatterPanels(clean);
   if (!Object.hasOwn(clean, 'distribution_panels') && Object.keys(clean).some(key => key.startsWith('hist_'))) clean.distribution_panels = [legacyDistributionPanel(clean)];
   for (const [key, definition] of Object.entries(analysisPanelDefinitions)) {
-    if (!Object.hasOwn(clean, key) && Object.keys(clean).some(field => field.startsWith(`${definition.prefix}_`) && field !== `${definition.prefix}_maxpts`)) clean[key] = definition.read(clean);
+    if (!Object.hasOwn(clean, key) && Object.keys(clean).some(field => field.startsWith(`${definition.prefix}_`) && field !== `${definition.prefix}_maxpts`)) clean[key] = key === 'trend_panels' ? legacyTrendPanels(clean, {}, true) : definition.read(clean);
   }
   if (clean.plot_type === 'Grouped scatter') clean.plot_type = 'Scatter';
   return {settings: clean, warnings};
@@ -372,7 +406,7 @@ export function decodeConfig(data) {
   catch (error) {throw new Error(`Could not read configuration: ${error.message}`);}
   if (!isObject(document)) throw new Error('A configuration must be a JSON object.');
   if (document.app !== CONFIG_APP) throw new Error('This file is not a TSPlotter configuration.');
-  if (![1, 2, CONFIG_VERSION].includes(document.version)) throw new Error(`Unsupported configuration version. This app supports versions 1, 2 and ${CONFIG_VERSION}.`);
+  if (![1, 2, 3, CONFIG_VERSION].includes(document.version)) throw new Error(`Unsupported configuration version. This app supports versions 1, 2, 3 and ${CONFIG_VERSION}.`);
   if (!Object.hasOwn(document, 'settings')) throw new Error('The configuration is missing its settings object.');
   return validateSettings(document.settings);
 }
@@ -459,10 +493,15 @@ export function normalizeConfiguration(settings, schema) {
     clean[key] = clean[key].map((panel, index) => {
       const defaults = definition.create(schema, index);
       if (key === 'trend_panels') {
-        const missing = panel.columns.filter(name => !numeric.has(name));
-        const selected = panel.columns.filter(name => numeric.has(name));
-        if (missing.length) warnings.push(`Trends ${index + 1}: unavailable numeric columns were skipped: ${missing.join(', ')}.${!selected.length && defaults.columns.length ? ' A default signal is selected.' : ''}`);
-        return {...panel, columns: selected.length ? selected : defaults.columns};
+        const subplots = panel.subplots.map((subplot, row) => {
+          const fallback = defaultTrendSubplot(schema, row).columns;
+          if (!Object.hasOwn(subplot, 'columns')) return {columns: fallback};
+          const missing = subplot.columns.filter(name => !numeric.has(name));
+          const selected = subplot.columns.filter(name => numeric.has(name));
+          if (missing.length) warnings.push(`Trends ${index + 1}, subplot ${row + 1}: unavailable numeric columns were skipped: ${missing.join(', ')}.${!selected.length && fallback.length ? ' A default signal is selected.' : ''}`);
+          return {columns: missing.length && !selected.length ? fallback : selected};
+        });
+        return {...panel, subplots};
       }
       if (!numeric.has(panel.y)) {
         if (panel.y) warnings.push(`${definition.label} ${index + 1}: saved signal '${panel.y}' is unavailable or nonnumeric. A default signal is selected.`);

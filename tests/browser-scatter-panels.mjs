@@ -78,8 +78,12 @@ async function saved(target) {
   const text = await download(target, '#save-config');
   const document = JSON.parse(text);
   assert.equal(document.app, 'tsplotter');
-  assert.equal(document.version, 3);
+  assert.equal(document.version, 4);
   for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels']) assert.ok(document.settings[key].length >= 1);
+  for (const panel of document.settings.trend_panels) {
+    assert.ok(panel.subplots.length >= 1);
+    assert.equal(Object.hasOwn(panel, 'columns'), false);
+  }
   assert.ok(!text.includes(file.name), 'Configurations must exclude the dataset source');
   assert.ok(Buffer.byteLength(text) < 256 * 1024);
   return document;
@@ -242,7 +246,7 @@ try {
   await load(page, twoPanels, 2);
   assert.equal(await page.locator('#chart-type').inputValue(), 'Scatter');
   assert.deepEqual((await saved(page)).settings.scatter_panels, twoPanels.settings.scatter_panels);
-  pass('Version 3 configuration round-trip restores the active Scatter view and every panel');
+  pass('Version 4 configuration round-trip restores the active Scatter view and every panel');
 
   const legacyV2 = structuredClone(twoPanels);
   legacyV2.version = 2;

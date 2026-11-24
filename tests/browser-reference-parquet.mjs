@@ -252,7 +252,7 @@ async function savedConfig() {
   const download = await grabDownload('#save-config');
   const text = await readFile(await download.path(), 'utf8'); await download.delete();
   const config = JSON.parse(text);
-  assert.equal(config.app, 'tsplotter'); assert.equal(config.version, 3);
+  assert.equal(config.app, 'tsplotter'); assert.equal(config.version, 4);
   assert.ok(!text.includes(path.basename(fixture)));
   return config;
 }
@@ -595,7 +595,7 @@ async function runFullWorkflow() {
     await loadConfig(boundedConfig);
     return {views: views.length, panelsPerView: 6, sourceRowsInWindow: profile.time.filteredRows, contexts};
   });
-  await stage('Version3 configuration and local recovery without dataset bytes', async () => {
+  await stage('Version4 configuration and local recovery without dataset bytes', async () => {
     const config = await savedConfig();
     for (const key of ['trend_panels','distribution_panels','scatter_panels','rolling_panels','derivative_panels']) assert.equal(config.settings[key].length, 2);
     await selectView('Trends', 2); await loadConfig(config);
@@ -629,7 +629,7 @@ async function runFullWorkflow() {
     if (native) await assertNativeSummary(native.statistics);
     return {reopenedRows: reference.rows, recheckedSummarySignals: reference.numericColumns};
   });
-  report.coverage = {reference: ['all5views','all233statistics','315034x234CSV','fullchartCSV','PNGEachView','constantAndPartialNull','2fullPanelsEachView','6liveBoundedPanelsEachView','maxAndMinPanelGuards','fullWebGLstep','all6lineShapesBounded','rollingBand','independentRollingAndDerivativeValues','colorAndMarkerBins','binScopes','paletteAndCustomSymbols','legends','linkedZoomReset','unchangedUpdateZoom','numericORAndTimeAndExactFilters','zeroRows','invalidWidthRecovery','v3Config','localRecoveryAndDeviceClear','independentPreview','summarySearchPaginationAndCache','reimport','cancellation'],
+  report.coverage = {reference: ['all5views','all233statistics','315034x234CSV','fullchartCSV','PNGEachView','constantAndPartialNull','2fullPanelsEachView','6liveBoundedPanelsEachView','maxAndMinPanelGuards','fullWebGLstep','all6lineShapesBounded','rollingBand','independentRollingAndDerivativeValues','colorAndMarkerBins','binScopes','paletteAndCustomSymbols','legends','linkedZoomReset','unchangedUpdateZoom','numericORAndTimeAndExactFilters','zeroRows','invalidWidthRecovery','v4Config','localRecoveryAndDeviceClear','independentPreview','summarySearchPaginationAndCache','reimport','cancellation'],
     supplemental: ['Text/category contains/starts/ends/regex and missing-category matching require categorical source columns; the reference contains only numeric values and timestamps.','Additional legacy v1/v2 migration cases, mobile390px layouts and alternate file formats remain covered by the separate synthetic browser/unit suites.']};
   assert.deepEqual(report.pageErrors, []); assert.deepEqual(report.writes, []); assert.deepEqual(report.external, []); assert.deepEqual(report.crashes, []);
   assert.deepEqual(report.graphicsWarnings, []);

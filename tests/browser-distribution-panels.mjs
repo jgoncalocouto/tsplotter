@@ -71,8 +71,12 @@ async function saved(target) {
   if (openDrawer) await target.locator('#close-sidebar').click();
   const config = JSON.parse(text);
   assert.equal(config.app, 'tsplotter');
-  assert.equal(config.version, 3);
+  assert.equal(config.version, 4);
   for (const key of ['trend_panels', 'rolling_panels', 'derivative_panels']) assert.ok(config.settings[key].length >= 1);
+  for (const panel of config.settings.trend_panels) {
+    assert.ok(panel.subplots.length >= 1);
+    assert.equal(Object.hasOwn(panel, 'columns'), false);
+  }
   assert.ok(!text.includes(fixture.name), 'Configuration contains settings, not the dataset source');
   assert.ok(Buffer.byteLength(text) < 256 * 1024);
   return config;
@@ -205,7 +209,7 @@ try {
   assert.equal(restored.settings.plot_type, 'Distribution');
   assert.deepEqual(restored.settings.distribution_panels, twoPanels.settings.distribution_panels);
   assert.deepEqual(restored.settings.scatter_panels, scatterSettings);
-  pass('Version 3 round-trip restores every distribution and retains independently configured scatter panels');
+  pass('Version 4 round-trip restores every distribution and retains independently configured scatter panels');
 
   const legacyV2 = structuredClone(twoPanels);
   legacyV2.version = 2;

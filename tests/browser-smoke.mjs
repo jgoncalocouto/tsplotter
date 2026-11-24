@@ -91,14 +91,15 @@ try {
   const saved = await readFile(await download.path(), 'utf8');
   const config = JSON.parse(saved);
   assert.equal(config.app, 'tsplotter');
-  assert.equal(config.version, 3);
+  assert.equal(config.version, 4);
   assert.equal(config.settings.plot_type, 'Scatter');
   assert.equal(config.settings.scatter_panels.length, 1);
   assert.equal(config.settings.scatter_panels[0].y, 'signal');
   for (const key of ['trend_panels', 'distribution_panels', 'rolling_panels', 'derivative_panels']) {
     assert.equal(config.settings[key].length, 1, `${key} is saved independently`);
   }
-  assert.deepEqual(config.settings.trend_panels[0].columns, ['signal']);
+  assert.deepEqual(config.settings.trend_panels[0].subplots, [{columns: ['signal']}]);
+  assert.equal(Object.hasOwn(config.settings.trend_panels[0], 'columns'), false);
   assert.equal(config.settings.rolling_panels[0].y, 'signal');
   assert.equal(config.settings.derivative_panels[0].y, 'signal');
   assert.ok(!saved.includes('full-points.csv'), 'Configuration must not include dataset source names');

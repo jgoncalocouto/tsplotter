@@ -1,12 +1,14 @@
 import './style.css';
 import Plotly from 'plotly.js-dist-min';
 import {DataEngine} from './engine-client.js';
-import {defaultSettings,decodeConfig,encodeConfig,normalizeConfiguration,filtersFromSettings,PLOT_TYPES,PALETTES,TIMEZONES,BIN_MODES,BIN_SCOPES,defaultScatterPanel,scatterPanels,MAX_SCATTER_PANELS,defaultDistributionPanel,distributionPanels,MAX_DISTRIBUTION_PANELS,MAX_ANALYSIS_PANELS,defaultTrendPanel,trendPanels,defaultRollingPanel,rollingPanels,defaultDerivativePanel,derivativePanels,COLORMAPS,MARKER_PRESETS} from './config.js';
+import {defaultSettings,decodeConfig,encodeConfig,normalizeConfiguration,filtersFromSettings,PLOT_TYPES,PALETTES,TIMEZONES,BIN_MODES,BIN_SCOPES,defaultScatterPanel,scatterPanels,MAX_SCATTER_PANELS,defaultDistributionPanel,distributionPanels,MAX_DISTRIBUTION_PANELS,MAX_ANALYSIS_PANELS,defaultTrendPanel,defaultTrendSubplot,trendPanels,trendSubplots,MAX_TREND_SUBPLOTS,defaultRollingPanel,rollingPanels,defaultDerivativePanel,derivativePanels,COLORMAPS,MARKER_PRESETS} from './config.js';
 import {buildFigure,chartRequest} from './charts.js';
 import {enhancePickers,closePickers} from './pickers.js';
 import {configurationSignature,saveWorkspace,loadWorkspace,clearWorkspace} from './workspace-recovery.js';
 import {axisRangeNumbers,comparisonAxes,linkedRangePatch} from './comparisons.js';
 import {csvBlob as csv} from './csv.js';
+import {TrendDataCache} from './trend-cache.js';
+import {bindTrendInteractions,unbindTrendInteractions} from './trend-interactions.js';
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $=s=>document.querySelector(s),fmt=n=>Number(n??0).toLocaleString();
@@ -14,6 +16,7 @@ let schema=null,state=defaultSettings(),lastResult=null,currentName='',busy=fals
 let activePanels={},lastPanelResults=[],savedConfig=null,recoveryAvailable=false,recoverySuppressed=false,recoveryProblem='',linkingAxes=false;
 let lastSummaryResult=null,summaryPage=0,summaryContext='',analysisGeneration=0;
 const SUMMARY_PAGE_SIZE=100;
+const trendDataCache=new TrendDataCache();
 const panelViews={
  Trends:{slug:'trend',label:'Trend',key:'trend_panels',max:MAX_ANALYSIS_PANELS,read:trendPanels,create:defaultTrendPanel},
  Scatter:{slug:'scatter',label:'Scatter',key:'scatter_panels',max:MAX_SCATTER_PANELS,read:scatterPanels,create:defaultScatterPanel},
@@ -38,7 +41,7 @@ const icons={
  plus:'<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>'
 };
 const modeMeta={
- 'Trends':['Follow changes over time','Compare signals on a shared time axis, with independent panels when you need them.','<path d="m3 17 5-6 4 3 5-9 4 4"/>'],
+ 'Trends':['Follow changes over time','Stack subplots on a shared time axis. Add another Trend for a separate layout.','<path d="m3 17 5-6 4 3 5-9 4 4"/>'],
  'Distribution':['Understand the distribution','Create independent distribution panels, each with its own signals and histogram bins.','<path d="M4 20V13h4v7m1 0V5h5v15m1 0V9h5v11"/>'],
  'Scatter':['Compare relationships','Create independent scatter panels, with optional color, marker shapes and numeric bins.','<circle cx="5" cy="17" r="1.2"/><circle cx="8" cy="11" r="1.2"/><circle cx="13" cy="14" r="1.2"/><circle cx="16" cy="7" r="1.2"/><circle cx="20" cy="4" r="1.2"/>'],
  'Rolling window':['See the underlying trend','Explore the trailing average and range while keeping the original signal in view.','<path d="m3 14 4-5 4 7 4-10 6 5M3 17c5-7 12-9 18-9"/>'],
@@ -126,6 +129,9 @@ function syncActions(){
   if($(`#remove-${view.slug}`))$(`#remove-${view.slug}`).disabled=busy||!schema||count<=1;
   for(const button of document.querySelectorAll(`[data-${view.slug}-panel],[data-edit-${view.slug}]`))button.disabled=busy;
  }
+ const subplotCount=state.plot_type==='Trends'?currentPanels()[activePanelIndex()].subplots.length:0;
+ for(const button of document.querySelectorAll('#add-trend-subplot,[data-duplicate-trend-subplot]'))button.disabled=busy||!schema||subplotCount>=MAX_TREND_SUBPLOTS;
+ for(const button of document.querySelectorAll('[data-remove-trend-subplot]'))button.disabled=busy||!schema||subplotCount<=1;
 }
 function setDirty(value=true){dirty=Boolean(value&&schema);if(value)recoverySuppressed=false;$('#dirty-indicator').classList.toggle('hidden',!dirty);$('#render-button').classList.toggle('has-changes',dirty);syncWorkspaceSettings();syncActions();}
 function setBusy(value){
@@ -158,6 +164,7 @@ function check(label,key,{id=''}={}){return `<label class="check"><input ${id?`i
 function currentPanels(){
  const view=panelView();
  if(!Array.isArray(state[view.key])||!state[view.key].length)state[view.key]=view.read(state,schema??{});
+ if(view.slug==='trend'&&state[view.key].some(panel=>!Array.isArray(panel.subplots)))state[view.key]=trendPanels(state,schema??{});
  activePanels[state.plot_type]=Math.max(0,Math.min(activePanelIndex(),state[view.key].length-1));
  return state[view.key];
 }
@@ -170,6 +177,11 @@ function panelInput(label,key,{type='number',min='',max='',step='any',maxLength=
  return `<label class="field">${esc(label)}<input data-panel-key="${key}" type="${type}" value="${esc(panel[key]??'')}" ${min!==''?`min="${min}"`:''} ${max!==''?`max="${max}"`:''} ${maxLength!==''?`maxlength="${maxLength}"`:''} ${type==='number'?`step="${step}"`:''}></label>`;
 }
 function panelCheck(label,key){return `<label class="check"><input data-panel-key="${key}" type="checkbox" ${currentPanels()[activePanelIndex()][key]?'checked':''}>${esc(label)}</label>`;}
+function trendSubplotEditor(){
+ const subplots=currentPanels()[activePanelIndex()].subplots,single=subplots.length===1;
+ const add=`<button type="button" id="add-trend-subplot" class="secondary subtle" ${subplots.length>=MAX_TREND_SUBPLOTS?'disabled':''}>${icons.plus}Add subplot</button>`;
+ return `<div class="trend-subplots wide ${single?'single-subplot':''}"><div class="trend-subplot-list">${subplots.map((subplot,index)=>`<div class="trend-subplot" role="group" aria-label="Subplot ${index+1}"><label class="field">${single?'Signals':`Subplot ${index+1} signals`}<select id="${index===0?'y-columns':`trend-subplot-columns-${index}`}" data-trend-subplot="${index}" multiple>${options(nums(),subplot.columns??[],true)}</select></label><div class="subplot-row-actions">${single?add:''}<button type="button" class="text-button subtle" data-duplicate-trend-subplot="${index}" aria-label="Duplicate subplot ${index+1}" ${subplots.length>=MAX_TREND_SUBPLOTS?'disabled':''}>Duplicate</button><button type="button" class="text-button subtle ${single?'hidden':''}" data-remove-trend-subplot="${index}" aria-label="Remove subplot ${index+1}" ${single?'disabled':''}>Remove</button></div></div>`).join('')}</div>${single?'':`<div class="subplot-toolbar">${add}<span class="field-help">${subplots.length} of ${MAX_TREND_SUBPLOTS} · shared X axis, separate Y axes</span></div>`}</div>`;
+}
 function panelBinOptions(encoding,label){
  const panel=currentPanels()[activePanelIndex()];
  if(!nums().includes(panel[encoding]))return '';
@@ -218,6 +230,10 @@ function capture() {
     const key=el.dataset.panelKey;if(!key)continue;
     currentPanels()[activePanelIndex()][key]=el.type==='checkbox'?el.checked:el.multiple?[...el.selectedOptions].map(option=>option.value):el.type==='number'?(el.value===''?undefined:Number(el.value)):el.value;
   }
+  if(state.plot_type==='Trends')for(const el of document.querySelectorAll('select[data-trend-subplot]')){
+    const subplot=currentPanels()[activePanelIndex()].subplots[Number(el.dataset.trendSubplot)];
+    if(subplot)subplot.columns=[...el.selectedOptions].map(option=>option.value);
+  }
 }
 function renderAxis(){
  const all=names(),absolute=state.setup_time_mode==='Absolute time',wasOpen=$('#time-options')?.open??false;
@@ -235,7 +251,7 @@ function renderAxis(){
 
 function renderOptions(){const focusedPanelKey=document.activeElement?.dataset.panelKey;const mode=state.plot_type,numeric=nums(),all=names(),none=['(none)',...all];let main='',appearance='';
  if(mode==='Trends'){
-  main=panelInput('Trend title','title',{type:'text',maxLength:80})+panelSelect('Signals','columns',numeric,{multiple:true,id:'y-columns',className:'wide'});
+  main=panelInput('Trend title','title',{type:'text',maxLength:80})+trendSubplotEditor();
   appearance=panelSelect('Line shape','shape',['linear','spline','hv','vh','hvh','vhv'])+panelInput('Line width','width',{min:1,max:8,step:1})+panelSelect('Y-axis scale','ytype',['linear','log'])
    +panelCheck('Show markers','markers')+panelCheck('Range slider','rangeslider')+panelCheck('Unified hover','unified')+panelCheck('Spike lines','spikes');
  }
@@ -271,7 +287,7 @@ function renderOptions(){const focusedPanelKey=document.activeElement?.dataset.p
    +panelSelect('Relative X spacing','xMode',['index step (1)','use numeric index values'])+panelInput('Derivative smoothing window','smoothWindow',{min:1,max:9999,step:1});
   appearance=panelCheck('Show markers','markers')+panelInput('Line width','width',{min:1,max:8,step:1})+panelCheck('Unified hover','unified')+panelCheck('Range slider','rangeslider')+panelCheck('Spike lines','spikes');
  }
- $('#chart-options').innerHTML=main;$('#chart-options').className='options';$('#appearance-options').innerHTML=appearance;$('#appearance-panel').classList.toggle('hidden',!appearance);renderPanelToolbar();refreshView();enhancePickers($('#chart-options'));if(focusedPanelKey){const field=$(`[data-panel-key="${focusedPanelKey}"]`);if(field&&!field.multiple)field.focus({preventScroll:true});}}
+ $('#chart-options').innerHTML=main;$('#chart-options').className=mode==='Trends'?'options trend-layout':'options';$('#appearance-options').innerHTML=appearance;$('#appearance-panel').classList.toggle('hidden',!appearance);renderPanelToolbar();refreshView();enhancePickers($('#chart-options'));if(focusedPanelKey){const field=$(`[data-panel-key="${focusedPanelKey}"]`);if(field&&!field.multiple)field.focus({preventScroll:true});}}
 function renderFilters() {
   const timeColumn = schema?.timeIndex || (state.setup_time_mode === 'Absolute time' && names().includes(state.setup_dt_col) ? state.setup_dt_col : undefined);
   const filterOptions = timeColumn ? [['(time index)', `Time index · ${timeColumn}`], ...names()] : names();
@@ -311,7 +327,7 @@ function analysisOptions(){
  return {preparedAxis:{x:xColumn(),timeAxis},x:xColumn(),timeAxis};
 }
 function filters(){const f=filtersFromSettings(state,schema);const options=analysisOptions();for(const condition of f){if(condition.column==='(time index)')condition.column=xColumn();if(condition.kind==='datetime'&&condition.column===xColumn()&&options.timeAxis)condition.timeAxis=options.timeAxis;}return f;}
-async function importFile(file){await task(async()=>{status('Reading your file on this device…','busy');capture();const isFirst=!schema;schema=null;lastResult=null;activePanels={};lastPanelResults=[];$('#preview-table').replaceChildren();clearSummary();resetPlotOutputs();$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');let imported,importWarnings=[];
+async function importFile(file){await task(async()=>{status('Reading your file on this device…','busy');capture();const isFirst=!schema;schema=null;trendDataCache.clear();lastResult=null;activePanels={};lastPanelResults=[];$('#preview-table').replaceChildren();clearSummary();resetPlotOutputs();$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');let imported,importWarnings=[];
  if(/\.xlsx?$/i.test(file.name)){const {readExcel}=await import('./file-import.js');const result=await readExcel(file,{sheetName:$('#sheet-name').value||undefined});imported=await engine.importRows(result.rows,{sourceName:file.name});importWarnings=result.warnings??[];}
  else if(/\.mat$/i.test(file.name)){const {readMatV73}=await import('./file-import.js');const result=await readMatV73(file);imported=await engine.importRows(result.rows,{sourceName:file.name});importWarnings=result.warnings??[];}
  else imported=await engine.importFile(file);
@@ -324,6 +340,8 @@ function unbindScatterLegend(graph){
 }
 function purgePlot(graph){
  if(!graph)return;
+ unbindTrendInteractions(graph);
+ delete graph._trendRenderKey;delete graph._trendArrays;
  unbindScatterLegend(graph);
  unbindComparison(graph);
  const release=regl=>{
@@ -389,7 +407,7 @@ function setPanelLayout(panels){
    $('#plot-grid').append(card);
   }
   card.querySelector('h3').textContent=panel.title||`${view.label} ${index+1}`;
-  card.querySelector('.plot-heading p').textContent=view.slug==='scatter'?`${panel.y} vs ${panel.x}`:panel.columns?panel.columns.join(', '):view.slug==='rolling'?`${panel.y} · ${panel.window} rows`: `${panel.y} · original, first and second derivative`;
+  card.querySelector('.plot-heading p').textContent=view.slug==='trend'?trendSubplots(panel).map((subplot,index)=>`${index+1}: ${subplot.columns.join(', ')||'Choose signals'}`).join(' · '):view.slug==='scatter'?`${panel.y} vs ${panel.x}`:panel.columns?panel.columns.join(', '):view.slug==='rolling'?`${panel.y} · ${panel.window} rows`: `${panel.y} · original, first and second derivative`;
   card.querySelector('.plot-canvas').setAttribute('aria-label',`${panel.title||`${view.label} ${index+1}`} chart`);
   card.classList.toggle('editing',index===activePanelIndex());
  });
@@ -494,19 +512,26 @@ async function updatePanelCharts(sharedFilters,preparedAxis){
   const firstBins={...requests[0].bins},fitColumns=[...new Set(panels.flatMap(panel=>panel.columns))];
   for(const request of requests){request.bins={...firstBins};request.binFitColumns=fitColumns;}
  }
+ const reuseTrend=view.slug==='trend'&&trendDataCache.canReuse(requests);
+ if(view.slug!=='trend')trendDataCache.clear();
  const results=[],generation=analysisGeneration,viewStates=new Map();
  lastPanelResults=[];lastResult=null;setPanelLayout(panels);
  for(const graph of $('#plot-grid').querySelectorAll('.plot-canvas')){
   const ranges=Object.fromEntries(Object.keys(graph.layout??{}).filter(key=>/^[xy]axis\d*$/.test(key)&&graph._fullLayout?.[key]?.autorange===false).map(key=>[key,[...graph._fullLayout[key].range]]));
   viewStates.set(graph.id,{revision:graph.layout?.uirevision,ranges,visibility:(graph.data??[]).map(trace=>trace.visible)});
-  purgePlot(graph);graph.innerHTML='<div class="plot-empty">Updating this panel…</div>';
+  if(!reuseTrend){purgePlot(graph);graph.innerHTML='<div class="plot-empty">Updating this panel…</div>';}
+ }
+ let trendResults;
+ if(view.slug==='trend'){
+  status(reuseTrend?'Updating Trend layout from the loaded data…':'Preparing all Trend signals in one query…','busy');
+  trendResults=await trendDataCache.query(requests,request=>engine.query(request));
  }
  let plotted=0;
  for(let index=0;index<panels.length;index++){
   if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
   status(`Calculating ${view.slug} ${index+1} of ${panels.length} · every selected row…`,'busy');
   if(sharedBins&&index>0&&results[0].meta?.binEdges?.length>=2)requests[index].bins.edges=[...results[0].meta.binEdges];
-  const result=await engine.query(requests[index]);result.meta??={};
+  const result=trendResults?trendResults[index]:await engine.query(requests[index]);result.meta??={};
   if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
   if(view.slug==='scatter')result.meta.colorKind=schema.columns.find(column=>column.name===panels[index].color)?.kind;
   results.push(result);lastPanelResults[index]={result,panel:panels[index]};if(index===0)lastResult=result;
@@ -524,7 +549,15 @@ async function updatePanelCharts(sharedFilters,preparedAxis){
    status(`Rendering ${view.slug} ${index+1} of ${panels.length} · ${fmt(rows.usable)} usable rows…`,'busy');
    await new Promise(resolve=>requestAnimationFrame(resolve));
    if(generation!==analysisGeneration||!schema)throw new DOMException('Analysis cancelled.','AbortError');
-   unbindScatterLegend(graph);unbindComparison(graph);await Plotly.react(graph,figure.data,figure.layout,figure.config);
+   const trendArrays=view.slug==='trend'?Object.values(result.columns):null;
+   const trendRenderKey=view.slug==='trend'?JSON.stringify([{...panels[index],title:undefined},requests[index].x,panels.length]):null;
+   const sameTrend=trendArrays&&graph._trendRenderKey===trendRenderKey&&trendArrays.length===graph._trendArrays?.length&&trendArrays.every((array,at)=>array===graph._trendArrays[at]);
+   unbindScatterLegend(graph);unbindComparison(graph);
+   if(!sameTrend)await Plotly.react(graph,figure.data,figure.layout,figure.config);
+   if(view.slug==='trend'){
+    graph._trendRenderKey=trendRenderKey;graph._trendArrays=trendArrays;
+    if(!sameTrend||!graph._trendInteractions)bindTrendInteractions(graph);
+   }
    if(generation!==analysisGeneration||!schema){purgePlot(graph);throw new DOMException('Analysis cancelled.','AbortError');}
    if(view.slug==='scatter')bindScatterLegend(graph,figure);
    bindComparison(graph,panels[index],figure);
@@ -606,6 +639,23 @@ function changePanels(action){
  if(action==='remove')$(`[data-${view.slug}-panel="${activePanelIndex()}"]`).focus();
  else $('[data-panel-key="title"]').focus();
 }
+function changeTrendSubplots(action,index){
+ if(busy||!schema||state.plot_type!=='Trends')return;
+ capture();const subplots=currentPanels()[activePanelIndex()].subplots;
+ if(action==='remove'){
+  if(subplots.length===1||!subplots[index])return;subplots.splice(index,1);index=Math.min(index,subplots.length-1);
+ }else{
+  if(subplots.length>=MAX_TREND_SUBPLOTS)return;
+  subplots.push(action==='duplicate'?structuredClone(subplots[index]):defaultTrendSubplot(schema,subplots.length));index=subplots.length-1;
+ }
+ renderOptions();setDirty(true);status('Subplot layout changed. Update charts to apply it.');
+ $(`select[data-trend-subplot="${index}"]`)?.nextElementSibling?.querySelector('.picker-trigger')?.focus();
+}
+$('#chart-options').addEventListener('click',event=>{
+ if(event.target.closest('#add-trend-subplot'))changeTrendSubplots('add');
+ const duplicate=event.target.closest('[data-duplicate-trend-subplot]');if(duplicate)changeTrendSubplots('duplicate',Number(duplicate.dataset.duplicateTrendSubplot));
+ const remove=event.target.closest('[data-remove-trend-subplot]');if(remove)changeTrendSubplots('remove',Number(remove.dataset.removeTrendSubplot));
+});
 for(const view of Object.values(panelViews))$(`#${view.slug}-toolbar`).addEventListener('click',event=>{
  const choice=event.target.closest(`[data-${view.slug}-panel]`);if(choice){editPanel(Number(choice.getAttribute(`data-${view.slug}-panel`)));return;}
  const id=event.target.closest('button')?.id;
@@ -632,6 +682,7 @@ for(const tab of document.querySelectorAll('[data-chart-mode]')){
  tab.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;event.preventDefault();const tabs=[...document.querySelectorAll('[data-chart-mode]')];const at=tabs.indexOf(tab);tabs[event.key==='Home'?0:event.key==='End'?tabs.length-1:(at+(event.key==='ArrowLeft'?-1:1)+tabs.length)%tabs.length].focus();});
 }
 $('#app').addEventListener('change',event=>{
+ if(event.target.dataset.trendSubplot!==undefined){if(!busy){capture();setDirty(true);}return;}
  const panelKey=event.target.dataset.panelKey;
  if(panelKey){
   if(busy)return;capture();const panel=currentPanels()[activePanelIndex()],view=panelView();
@@ -677,6 +728,6 @@ $('#summary-search').addEventListener('input',()=>{summaryPage=0;renderSummary()
 $('#summary-prev').onclick=()=>{summaryPage=Math.max(0,summaryPage-1);renderSummary();};
 $('#summary-next').onclick=()=>{summaryPage++;renderSummary();};
 $('#image-export').onclick=()=>exportChartImage(0);
-$('#cancel-button').onclick=()=>{engine.cancel();schema=null;clearSummary();resetPlotOutputs();setBusy(false);$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');status('Analysis cancelled. Reopen your local file to continue.');};
+$('#cancel-button').onclick=()=>{engine.cancel();schema=null;trendDataCache.clear();clearSummary();resetPlotOutputs();setBusy(false);$('#workspace').classList.add('hidden');$('#welcome').classList.remove('hidden');status('Analysis cancelled. Reopen your local file to continue.');};
 window.addEventListener('pagehide',()=>{capture();syncWorkspaceSettings();});
 initializeRecovery();renderAxis();renderOptions();setSidebar(false,{focus:false});syncActions();

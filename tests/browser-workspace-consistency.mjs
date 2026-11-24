@@ -94,7 +94,11 @@ async function download(target, selector) {
 async function saved(target) {
   const config = JSON.parse(await download(target, '#save-config'));
   assert.equal(config.app, 'tsplotter');
-  assert.equal(config.version, 3);
+  assert.equal(config.version, 4);
+  for (const panel of config.settings.trend_panels) {
+    assert.ok(panel.subplots.length >= 1);
+    assert.equal(Object.hasOwn(panel, 'columns'), false);
+  }
   return config;
 }
 async function load(target, config, name, count = 1) {
@@ -152,6 +156,7 @@ try {
     await update(page, name, 2);
     for (let index = 0; index < 2; index++) assert.ok((await traces(page, slug, index)).some(trace => trace.x.length === rows));
     const before = (await saved(page)).settings[keys[name]];
+    if (name === 'Trends') assert.deepEqual(before.map(panel => panel.subplots), [[{columns: ['signal']}], [{columns: ['shifted']}]]);
     await page.locator(`#duplicate-${slug}`).click();
     await update(page, name, 3);
     const copied = (await saved(page)).settings[keys[name]];
@@ -232,7 +237,7 @@ try {
   assert.deepEqual((await traces(page, 'distribution', 0))[0].edges, (await traces(page, 'distribution', 1))[0].edges);
   const comparisonConfig = await saved(page);
   assert.equal(comparisonConfig.settings.distribution_panels[0].binWidth, 7, 'A valid inactive width remains reusable');
-  pass('Full-dataset bins stay fixed across filters, filtered bins adapt, shared bins align comparisons and v3 preserves inactive settings');
+  pass('Full-dataset bins stay fixed across filters, filtered bins adapt, shared bins align comparisons and v4 preserves inactive settings');
 
   // Data inspection is independent from chart validation and never clears unapplied chart edits.
   await edit(page, 'distribution', 0); await field(page, 'binMode', 'Fixed width'); await field(page, 'binWidth', 0);
@@ -281,6 +286,11 @@ try {
   await page.setInputFiles('#file-input', file); await ready(page, 'Trends');
   pass('Local recovery restores unsaved workspace choices only after reopening a dataset; clearing recovery preserves the current analysis');
 
+  await load(page, {app: 'tsplotter', version: 3, settings: {plot_type: 'Trends', setup_time_mode: 'Relative time', setup_index: 'x', trend_panels: [{title: 'Version 3 first', columns: ['signal']}, {title: 'Version 3 second', columns: ['shifted']}]}}, 'Trends', 2);
+  const migratedTrends = (await saved(page)).settings.trend_panels;
+  assert.deepEqual(migratedTrends.map(panel => panel.subplots), [[{columns: ['signal']}], [{columns: ['shifted']}]]);
+  assert.deepEqual(migratedTrends.map(panel => panel.title), ['Version 3 first', 'Version 3 second']);
+  for (let index = 0; index < 2; index++) assert.ok((await traces(page, 'trend', index)).some(trace => trace.x.length === rows));
   await load(page, {app: 'tsplotter', version: 1, settings: {plot_type: 'Rolling window', setup_time_mode: 'Relative time', setup_index: 'x', rw_y: 'signal', rw_window: 7, rw_include_current: false}}, 'Rolling window');
   assert.equal(await page.locator('[data-panel-key="y"]').inputValue(), 'signal');
   assert.equal(await page.locator('[data-panel-key="window"]').inputValue(), '7');
@@ -291,7 +301,7 @@ try {
   assert.equal(await page.locator('[data-panel-key="smoothWindow"]').inputValue(), '3');
   assert.equal(await page.locator('[data-panel-key="timeUnit"]').inputValue(), 'minutes');
   assert.equal((await saved(page)).settings.derivative_panels.length, 1);
-  pass('Version 1 rolling and version 2 derivative configurations migrate into the common version 3 panel model');
+  pass('Version 1 rolling, version 2 derivative and version 3 independent Trend configurations migrate into the version 4 model');
 
   const ledgerPage = await browser.newPage({viewport: {width: 1440, height: 1000}, acceptDownloads: true});
   await instrument(ledgerPage);

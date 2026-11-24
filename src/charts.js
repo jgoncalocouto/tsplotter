@@ -1,4 +1,4 @@
-import {derivativePanels,distributionPanels,rollingPanels,scatterPanels,trendPanels} from './config.js';
+import {derivativePanels,distributionPanels,rollingPanels,scatterPanels,trendPanels,trendSubplots} from './config.js';
 
 export const COLORS=['#6251c6','#13a79b','#e89b40','#df617b','#438cd8','#9c6ec6','#717f98','#9bbf58','#b77662','#d071bb'];
 const PALETTE_COLORS={
@@ -75,9 +75,9 @@ export function buildFigure(result,settings,xName,panelIndex=0){
 
  const x=values(c,xName);
  const line=(name,y,i=0,extra={})=>{const suffix=axis(i);traces.push({type:GL_LINE_SHAPES.has(extra.line?.shape??'linear')?'scattergl':'scatter',mode:'lines',x,y,name,xaxis:`x${suffix}`,yaxis:`y${suffix}`,connectgaps:false,...extra,line:{color:seriesColor(name),width:2,simplify:false,...extra.line}});};
- const axes=(n,spikes=true)=>{
-  panels=n;layout.height=510+(n-1)*175;
-  const gap=n>1?.065:0,panelHeight=(1-gap*(n-1))/n;
+ const axes=(n,spikes=true,gapFraction=.065,rowHeight=175)=>{
+  panels=n;layout.height=510+(n-1)*rowHeight;
+  const gap=n>1?gapFraction:0,panelHeight=(1-gap*(n-1))/n;
   for(let i=0;i<n;i++){
    const s=axis(i),bottom=1-(i+1)*panelHeight-i*gap;
    const shared={automargin:true,showgrid:true,gridcolor:'#eaf0f7',gridwidth:1,zeroline:false,showline:true,linecolor:'#dce3ee',linewidth:1,ticks:'outside',ticklen:4,tickcolor:'#dce3ee',tickfont:{size:13,color:'#738096'},showspikes:true,spikemode:'across',spikesnap:'cursor',spikedash:'dot',spikecolor:'#a8b4c8',spikethickness:1};
@@ -93,9 +93,33 @@ export function buildFigure(result,settings,xName,panelIndex=0){
  if(mode==='Trends'){
   const panel=trendPanels(settings)[panelIndex];
   if(!panel)throw new Error(`Trend panel ${panelIndex+1} does not exist.`);
-  axes(1,panel.spikes);layout.uirevision=`trends:${panelIndex}:${JSON.stringify([xName,panel.columns,panel.ytype])}`;
-  for(const name of panel.columns)line(name,values(c,name),0,{mode:panel.markers?'lines+markers':'lines',marker:{size:4},line:{width:panel.width,shape:panel.shape,simplify:false}});
-  layout.yaxis.type=panel.ytype;rangeSlider('xaxis',panel.rangeslider);layout.hovermode=panel.unified?'x unified':'closest';
+  const subplots=trendSubplots(panel),seen=new Set();
+  // Reserve space for each row heading without expanding the gaps as rows grow.
+  const rowGap=32/(510+(subplots.length-1)*210-layout.margin.t-layout.margin.b);
+  axes(subplots.length,panel.spikes,rowGap,210);layout.uirevision=`trends:${panelIndex}:${JSON.stringify([xName,subplots.map(subplot=>subplot.columns),panel.ytype])}`;
+  for(const [index,subplot]of subplots.entries()){
+   const suffix=axis(index);
+   layout[`yaxis${suffix}`].type=panel.ytype;
+   if(settings.setup_time_mode==='Absolute time')layout[`xaxis${suffix}`].type='date';
+   for(const name of subplot.columns){
+    line(name,values(c,name),index,{mode:panel.markers?'lines+markers':'lines',marker:{size:4},line:{width:panel.width,shape:panel.shape,simplify:false},
+     legendgroup:`trend:${name}`,showlegend:!seen.has(name),meta:{trendSeries:true,panelIndex,subplotIndex:index,column:name}});
+    seen.add(name);
+   }
+   if(!subplot.columns.length){
+    layout[`yaxis${suffix}`].showticklabels=false;layout[`yaxis${suffix}`].showgrid=false;
+    // Plotly omits unused subplot axes; place the empty-row prompt in paper
+    // coordinates so it stays centered in its reserved row.
+    const domain=layout[`yaxis${suffix}`].domain;
+    (layout.annotations??=[]).push({text:`Choose signals for subplot ${index+1}`,xref:'paper',yref:'paper',x:.5,y:(domain[0]+domain[1])/2,
+     showarrow:false,font:{size:13,color:'#78859a'}});
+   }else if(subplots.length>1){
+    (layout.annotations??=[]).push({text:`Subplot ${index+1}`,hovertext:subplot.columns.map(escapeLabel).join('<br>'),
+     xref:`x${suffix} domain`,yref:`y${suffix} domain`,x:0,y:1,xanchor:'left',yanchor:'bottom',yshift:6,
+     showarrow:false,font:{size:12,color:'#63708a'}});
+   }
+  }
+  rangeSlider(`xaxis${axis(subplots.length-1)}`,panel.rangeslider);layout.hovermode=panel.unified?'x unified':'closest';
  } else if(mode==='Distribution'){
   const panel=distributionPanels(settings)[panelIndex];
   if(!panel)throw new Error(`Distribution panel ${panelIndex+1} does not exist.`);
@@ -191,7 +215,7 @@ export function chartRequest(settings,x,filters,panelIndex=0){
  if(settings.setup_time_mode!=='Absolute time')delete request.timeAxis;
  if(request.mode==='trends'){
   const panel=trendPanels(settings)[panelIndex];if(!panel)throw new Error(`Trend panel ${panelIndex+1} does not exist.`);
-  request.y=[...panel.columns];
+  request.y=[...new Set(trendSubplots(panel).flatMap(subplot=>subplot.columns))];
  }
  if(request.mode==='distribution'){
   const panel=distributionPanels(settings)[panelIndex];

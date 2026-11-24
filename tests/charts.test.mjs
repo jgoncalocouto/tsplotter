@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {buildFigure,chartRequest} from '../src/charts.js';
 import {defaultSettings,defaultTrendPanel,defaultRollingPanel,defaultDerivativePanel} from '../src/config.js';
 const schema={columns:[{name:'x',kind:'numeric'},{name:'y',kind:'numeric'}]};
-test('trends retain every point beyond former sampling caps',()=>{const n=200001,s={...defaultSettings(schema),trend_panels:[{...defaultTrendPanel(schema),columns:['y']}]};const cols={x:Array.from({length:n},(_,i)=>i),y:Array.from({length:n},(_,i)=>i*2)};const fig=buildFigure({columns:cols,rowCount:n},s,'x');assert.equal(fig.data[0].x.length,n);assert.equal(fig.data[0].y.at(-1),400000);assert.equal(fig.data[0].line.simplify,false);});
+test('trends retain every point beyond former sampling caps',()=>{const n=200001,s={...defaultSettings(schema),trend_panels:[{...defaultTrendPanel(schema),subplots:[{columns:['y']}]}]};const cols={x:Array.from({length:n},(_,i)=>i),y:Array.from({length:n},(_,i)=>i*2)};const fig=buildFigure({columns:cols,rowCount:n},s,'x');assert.equal(fig.data[0].x.length,n);assert.equal(fig.data[0].y.at(-1),400000);assert.equal(fig.data[0].line.simplify,false);});
 test('scatter does not treat none labels as source columns or parse numeric x as timestamps',()=>{const s={...defaultSettings(schema),plot_type:'Scatter',setup_time_mode:'Absolute time'};const request=chartRequest(s,'x',[]);assert.equal(request.color,undefined);assert.equal(request.marker,undefined);assert.equal(request.timeAxis,undefined);});
 test('relative axes preserve numeric values without implicit datetime parsing',()=>{const s=defaultSettings(schema);assert.equal(chartRequest(s,'x',[]).timeAxis,undefined);});
 test('legacy derivative settings map smoothing and explicit numeric spacing to engine',()=>{const s={plot_type:'Derivatives',der_y:'y',der_smooth:7,der_xmode:'use numeric index values',der_tunit:'seconds'};const request=chartRequest(s,'x',[]);assert.equal(request.smoothWindow,7);assert.equal(request.derivativeUnit,'seconds');});
@@ -16,17 +16,23 @@ test('legacy grouped scatter settings retain raw rows with separate encoding gui
  assert.deepEqual(figure.data.filter(trace=>trace.meta?.encoding==='color').map(trace=>trace.name),['a','b']);
  assert.deepEqual(figure.data.filter(trace=>trace.meta?.encoding==='marker').map(trace=>trace.name),['one','two']);
 });
-test('legacy Trends panels become independent full-area figures',()=>{
+test('legacy Trends subplot count stays in one aligned multi-row figure',()=>{
  const columns={x:[0,1,2],y:[1,3,2]};
  for(let count=1;count<=6;count++){
   const settings={plot_type:'Trends',mlc_n_subplots:count,mlc_rangeslider:true};
   for(let i=0;i<count;i++)settings[`mlc_cols_${i}`]=['y'];
+  const figure=buildFigure({columns,rowCount:3},settings,'x');
+  assert.equal(figure.data.length,count);assert.deepEqual(chartRequest(settings,'x',[]).y,['y']);
+  const domains=Array.from({length:count},(_,index)=>figure.layout[`yaxis${index?index+1:''}`].domain);
+  assert.equal(domains[0][1],1);assert.ok(Math.abs(domains.at(-1)[0])<1e-12);
   for(let i=0;i<count;i++){
-   const figure=buildFigure({columns,rowCount:3},settings,'x',i);
-   assert.deepEqual(figure.layout.yaxis.domain,[0,1]);assert.equal(figure.layout.xaxis.anchor,'y');assert.equal(figure.layout.xaxis.showticklabels,true);
-   assert.equal(figure.layout.xaxis.rangeslider.visible,true);assert.equal(figure.layout.yaxis2,undefined);assert.equal(figure.data.length,1);
-   assert.deepEqual(figure.data[0].x,columns.x);assert.deepEqual(figure.data[0].y,columns.y);assert.equal(figure.data[0].line.simplify,false);
+   const suffix=i?String(i+1):'',xaxis=figure.layout[`xaxis${suffix}`];
+   assert.equal(xaxis.anchor,`y${suffix}`);assert.equal(xaxis.showticklabels,i===count-1);assert.equal(xaxis.matches,i?'x':undefined);
+   if(i<count-1){assert.equal(xaxis.rangeslider,undefined);assert.ok(domains[i][0]>domains[i+1][1]);}
+   else assert.equal(xaxis.rangeslider.visible,true);
+   assert.deepEqual(figure.data[i].x,columns.x);assert.deepEqual(figure.data[i].y,columns.y);assert.equal(figure.data[i].line.simplify,false);
   }
+  assert.throws(()=>buildFigure({columns,rowCount:3},settings,'x',1),/Trend panel 2/);
  }
 });
 test('window and derivative spike controls change presentation without changing plotted series',()=>{
@@ -243,8 +249,8 @@ test('invalid active distribution width stays invalid instead of silently becomi
 });
 
 test('Trends instances own signals and presentation while source colors survive reordering',()=>{
- const first={...defaultTrendPanel(schema),columns:['y','x'],shape:'spline',width:4,ytype:'log',markers:true,rangeslider:false,unified:false,spikes:false};
- const second={...defaultTrendPanel(schema,1),columns:['x','y'],shape:'linear',width:1,ytype:'linear',markers:false,rangeslider:true,unified:true,spikes:true};
+ const first={...defaultTrendPanel(schema),subplots:[{columns:['y','x']}],shape:'spline',width:4,ytype:'log',markers:true,rangeslider:false,unified:false,spikes:false};
+ const second={...defaultTrendPanel(schema,1),subplots:[{columns:['x','y']}],shape:'linear',width:1,ytype:'linear',markers:false,rangeslider:true,unified:true,spikes:true};
  const settings={plot_type:'Trends',trend_panels:[first,second]},before=structuredClone(settings),columns={x:[0,1,2],y:[1,null,3]};
  const a=chartRequest(settings,'x',[],0),b=chartRequest(settings,'x',[],1);
  assert.deepEqual(a.y,['y','x']);assert.deepEqual(b.y,['x','y']);a.y.pop();assert.deepEqual(settings,before);
@@ -319,7 +325,7 @@ test('Distribution signal colors and bin scopes are independent of selected orde
 
 test('example signals remain distinguishable with stable source colors',()=>{
  const names=['temperature','humidity','power_kw'];
- const settings={plot_type:'Trends',trend_panels:[{...defaultTrendPanel(),columns:names}]};
+ const settings={plot_type:'Trends',trend_panels:[{...defaultTrendPanel(),subplots:[{columns:names}]}]};
  const figure=buildFigure({columns:{x:[0,1],...Object.fromEntries(names.map(name=>[name,[1,2]]))}},settings,'x');
  assert.equal(new Set(figure.data.map(trace=>trace.line.color)).size,3);
 });
@@ -354,7 +360,7 @@ test('all high-volume analysis traces retain 315034 points and original gaps',()
   columns[`y__${suffix}`]=columns.y.map((value,index)=>index===0||value===null?null:value+offset);
  }
  const settings={
-  ...defaultSettings(schema),trend_panels:[{...defaultTrendPanel(schema),columns:['y']}],
+  ...defaultSettings(schema),trend_panels:[{...defaultTrendPanel(schema),subplots:[{columns:['y']}]}],
   rolling_panels:[{...defaultRollingPanel(schema),y:'y',band:true}],
   derivative_panels:[{...defaultDerivativePanel(schema),y:'y'}],scatter_panels:[scatterPanel()],
  };
@@ -395,7 +401,7 @@ test('rolling shading closes each finite run and removes only redundant flat-edg
 test('supported step shapes keep their interpolation in WebGL while splines remain SVG',()=>{
  const columns={x:[0,1,2,3],y:[1,null,3,2]};
  for(const shape of ['linear','hv','vh','hvh','vhv','spline']){
-  const settings={plot_type:'Trends',trend_panels:[{...defaultTrendPanel(schema),columns:['y'],shape}]};
+  const settings={plot_type:'Trends',trend_panels:[{...defaultTrendPanel(schema),subplots:[{columns:['y']}],shape}]};
   const trace=buildFigure({columns},settings,'x').data[0];
   assert.equal(trace.type,shape==='spline'?'scatter':'scattergl');
   assert.equal(trace.line.shape,shape);assert.equal(trace.line.simplify,false);
@@ -425,4 +431,49 @@ test('grouping by a Scatter axis retains the value in hover without duplicate cu
  assert.equal(figure.data[0].marker.color,columns.x);
  assert.match(figure.data[0].hovertemplate,/x: %\{x\}<br>y: %\{y\}/);
  assert.deepEqual(figure.scatterGroups.marker,['4','5','6']);
+});
+
+test('nested Trends rows query a de-duplicated union and keep independent axes with shared X',()=>{
+ const subplots=[{columns:['y']},{columns:[]},{columns:['x','y']}];
+ const settings={plot_type:'Trends',setup_time_mode:'Relative time',trend_panels:[{...defaultTrendPanel(schema),subplots,rangeslider:true}]};
+ const before=structuredClone(settings),columns={x:[0,1,2,3],y:[10,null,30,40]};
+ const request=chartRequest(settings,'x',[]),figure=buildFigure({columns,rowCount:4},settings,'x');
+ assert.deepEqual(request.y,['y','x']);request.y.pop();assert.deepEqual(settings,before);
+ assert.deepEqual(figure.data.map(trace=>trace.name),['y','x','y']);
+ assert.deepEqual(figure.data.map(trace=>trace.xaxis),['x','x3','x3']);assert.deepEqual(figure.data.map(trace=>trace.yaxis),['y','y3','y3']);
+ for(const trace of figure.data){assert.equal(trace.x,columns.x);assert.equal(trace.y,columns[trace.name]);assert.equal(trace.y.length,4);assert.equal(trace.connectgaps,false);assert.equal(trace.line.simplify,false);}
+ assert.equal(figure.layout.xaxis.matches,undefined);assert.equal(figure.layout.xaxis2.matches,'x');assert.equal(figure.layout.xaxis3.matches,'x');
+ for(const name of ['yaxis','yaxis2','yaxis3'])assert.equal(figure.layout[name].matches,undefined);
+ assert.equal(figure.layout.xaxis.rangeslider,undefined);assert.equal(figure.layout.xaxis2.rangeslider,undefined);assert.equal(figure.layout.xaxis3.rangeslider.visible,true);
+ assert.equal(figure.layout.xaxis.showticklabels,false);assert.equal(figure.layout.xaxis2.showticklabels,false);assert.equal(figure.layout.xaxis3.showticklabels,true);
+ assert.equal(figure.layout.annotations.length,3);const blank=figure.layout.annotations.find(item=>item.text.startsWith('Choose signals'));
+ assert.equal(blank.xref,'paper');assert.equal(blank.yref,'paper');assert.match(blank.text,/subplot 2/);assert.ok(blank.y>figure.layout.yaxis2.domain[0]&&blank.y<figure.layout.yaxis2.domain[1]);
+ assert.ok(figure.layout.annotations.some(item=>item.text==='Subplot 1'&&item.hovertext==='y'));assert.ok(figure.layout.annotations.some(item=>item.text==='Subplot 3'&&item.hovertext==='x<br>y'));
+ assert.equal(figure.layout.yaxis2.showticklabels,false);assert.equal(figure.layout.yaxis2.showgrid,false);
+ assert.equal(figure.data[0].legendgroup,figure.data[2].legendgroup);assert.equal(figure.data[0].showlegend,true);assert.equal(figure.data[2].showlegend,false);
+ assert.deepEqual(settings,before);
+});
+
+test('nested Trends instances preserve their own row layout, query and date-axis identity',()=>{
+ const settings={plot_type:'Trends',setup_time_mode:'Absolute time',trend_panels:[
+  {...defaultTrendPanel(schema),subplots:[{columns:[]},{columns:['y']}],rangeslider:false},
+  {...defaultTrendPanel(schema,1),subplots:[{columns:['x']},{columns:['y']},{columns:[]}],rangeslider:true},
+ ]};
+ const columns={time:['2026-01-01T00:00:00.000Z','2026-01-01T00:00:01.000Z'],x:[1,2],y:[3,4]};
+ const first=buildFigure({columns,rowCount:2},settings,'time',0),second=buildFigure({columns,rowCount:2},settings,'time',1);
+ assert.deepEqual(chartRequest(settings,'time',[],0).y,['y']);assert.deepEqual(chartRequest(settings,'time',[],1).y,['x','y']);
+ assert.equal(first.data[0].xaxis,'x2');assert.equal(first.data[0].yaxis,'y2');assert.equal(first.layout.yaxis3,undefined);assert.equal(first.layout.xaxis2.rangeslider.visible,false);
+ assert.equal(second.layout.xaxis3.rangeslider.visible,true);assert.notEqual(first.layout.uirevision,second.layout.uirevision);
+ for(const figure of [first,second])for(const [name,axis]of Object.entries(figure.layout))if(/^xaxis\d*$/.test(name))assert.equal(axis.type,'date');
+ assert.equal(first.layout.annotations.find(item=>item.text.startsWith('Choose signals')).xref,'paper');assert.equal(second.layout.annotations.find(item=>item.text.startsWith('Choose signals')).xref,'paper');
+ assert.equal(first.data[0].x,columns.time);assert.equal(second.data[0].x,columns.time);
+});
+
+test('version3 flat Trends instances each remain one subplot',()=>{
+ const settings={plot_type:'Trends',trend_panels:[{title:'First',columns:['y']},{title:'Second',columns:['x','y']}]},columns={x:[1,2],y:[3,4]};
+ for(let index=0;index<2;index++){
+  const figure=buildFigure({columns},settings,'x',index);
+  assert.equal(figure.layout.yaxis2,undefined);assert.deepEqual(figure.data.map(trace=>trace.name),settings.trend_panels[index].columns);
+  assert.deepEqual(chartRequest(settings,'x',[],index).y,settings.trend_panels[index].columns);
+ }
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {decodeConfig, encodeConfig, validateSettings, normalizeConfiguration, defaultSettings, filtersFromSettings, CONFIG_VERSION, MAX_CONFIG_BYTES, isConfigKey, ROW_INDEX, PLOT_TYPES, defaultScatterPanel, scatterPanels, MAX_SCATTER_PANELS, defaultDistributionPanel, distributionPanels, MAX_DISTRIBUTION_PANELS, defaultTrendPanel, trendPanels, defaultRollingPanel, rollingPanels, defaultDerivativePanel, derivativePanels, MAX_ANALYSIS_PANELS} from '../src/config.js';
+import {decodeConfig, encodeConfig, validateSettings, normalizeConfiguration, defaultSettings, filtersFromSettings, CONFIG_VERSION, MAX_CONFIG_BYTES, isConfigKey, ROW_INDEX, PLOT_TYPES, defaultScatterPanel, scatterPanels, MAX_SCATTER_PANELS, defaultDistributionPanel, distributionPanels, MAX_DISTRIBUTION_PANELS, defaultTrendPanel, defaultTrendSubplot, trendPanels, trendSubplots, MAX_TREND_SUBPLOTS, defaultRollingPanel, rollingPanels, defaultDerivativePanel, derivativePanels, MAX_ANALYSIS_PANELS} from '../src/config.js';
 const document = (settings, extra = {}) => JSON.stringify({app: 'tsplotter', version: 1, settings, ...extra});
 const schema = {rowCount: 10, columns: [{name: 'temperature', type: 'DOUBLE', kind: 'numeric'}, {name: 'humidity', type: 'DOUBLE', kind: 'numeric'}, {name: 'time', type: 'TIMESTAMP', kind: 'datetime'}, {name: 'shift', type: 'VARCHAR', kind: 'categorical'}]};
 
@@ -17,10 +17,10 @@ test('portable version 1 migrates grouped scatter while preserving time, filter 
   assert.equal(panels[0].markerBinWidth, 2.5); assert.equal(panels[0].size, 9);
   assert.equal(panels[0].opacity, .65); assert.equal(panels[0].palette, 'D3');
   assert.equal(distributions[0].binMode, 'Fixed width'); assert.equal(distributions[0].binWidth, .125);
-  assert.equal(trends.length, 2); assert.deepEqual(trends[0].columns, ['temperature', 'humidity']);
+  assert.equal(trends.length, 1); assert.deepEqual(trends[0].subplots, [{columns: ['temperature', 'humidity']}, {}]);
   assert.equal(rolling[0].window, 100); assert.equal(derivatives[0].smoothWindow, 3);
   const exported = encodeConfig(loaded.settings);
-  assert.equal(JSON.parse(exported).version, 3);
+  assert.equal(JSON.parse(exported).version, 4);
   assert.deepEqual(decodeConfig(exported), loaded);
 });
 test('export excludes all data, files, handles, trigger state and unrecognized keys', () => {
@@ -37,7 +37,7 @@ for (const [key, value] of [['mlc_n_subplots', 0], ['mlc_n_subplots', true], ['m
 for (const data of ['not json', '', '[]', 'null', '42', '{"app":"tsplotter","version":1,"settings":{"x":1e999}}', '{"app":"tsplotter","version":1,"settings":{"a":NaN}}', '{"app":"tsplotter","version":1,"settings":{\u000bx:2}}']) test(`reject malformed/nonfinite config ${data.slice(0, 20)}`, () => assert.throws(() => decodeConfig(data)));
 test('reject duplicate fields rather than applying ambiguous values', () => assert.throws(() => decodeConfig('{"app":"tsplotter","version":1,"settings":{"sc_msize":5,"sc_msize":8}}'), /Duplicate/));
 test('reject duplicate escaped fields too', () => assert.throws(() => decodeConfig('{"app":"tsplotter","version":1,"settings":{"sc_msize":5,"sc_\\u006dsize":8}}'), /Duplicate/));
-for (const version of [0, 4, true, '1', null]) test(`reject unsupported version ${version}`, () => assert.throws(() => decodeConfig(document({}, {version})), /version/));
+for (const version of [0, 5, true, '1', null]) test(`reject unsupported version ${version}`, () => assert.throws(() => decodeConfig(document({}, {version})), /version/));
 test('handles UTF8 BOM, uint8 subarrays, and non-ASCII values', () => {
   const bytes = new TextEncoder().encode(`x\uFEFF${document({mlc_cols_0: ['日']})}`);
   assert.deepEqual(decodeConfig(bytes.subarray(1)).settings.mlc_cols_0, ['日']);
@@ -121,7 +121,7 @@ test('the chart navigation exposes one scatter view and independent default pane
   assert.equal(defaultSettings(schema).scatter_panels.length, 1);
 });
 
-test('version 3 round-trips multiple independent scatter panels without data or UI state', () => {
+test('version 4 round-trips multiple independent scatter panels without data or UI state', () => {
   const panels = [
     {...defaultScatterPanel(schema), title: 'Conditions', color: 'temperature', colorBinMode: 'Number of bins', colorBinCount: 4, marker: 'shift', opacity: .45},
     {...defaultScatterPanel(schema, 1), title: 'Humidity response', x: 'humidity', y: 'temperature', color: 'humidity', colorMode: 'continuous', colormap: 'Cividis', marker: 'temperature', markerBinMode: 'Bin width', markerBinWidth: .25, markerPreset: 'Directional', size: 11},
@@ -129,7 +129,7 @@ test('version 3 round-trips multiple independent scatter panels without data or 
   const original = structuredClone(panels);
   const encoded = encodeConfig({plot_type: 'Scatter', scatter_panels: panels, activeScatter: 1, dataset: {private: true}});
   const document = JSON.parse(encoded);
-  assert.equal(document.version, 3);
+  assert.equal(document.version, 4);
   assert.deepEqual(Object.keys(document.settings).sort(), ['plot_type', 'scatter_panels']);
   const loaded = decodeConfig(encoded);
   assert.deepEqual(loaded.settings.scatter_panels, panels);
@@ -249,7 +249,7 @@ test('distribution defaults select numeric columns and keep arrays independent',
   assert.deepEqual(defaultSettings(schema).distribution_panels[0].columns, ['temperature']);
 });
 
-test('version 3 round-trips independent distributions and scatter settings together', () => {
+test('version 4 round-trips independent distributions and scatter settings together', () => {
   const panels = [
     defaultDistributionPanel(schema),
     {...defaultDistributionPanel(schema, 1), title: 'Humidity spread', columns: ['humidity'], binMode: 'Fixed width', binWidth: .125},
@@ -258,7 +258,7 @@ test('version 3 round-trips independent distributions and scatter settings toget
   const state = {plot_type: 'Distribution', distribution_panels: panels, scatter_panels: [defaultScatterPanel(schema)], activeDistribution: 2, dataset: {private: true}};
   const original = structuredClone(state);
   const exported = JSON.parse(encodeConfig(state));
-  assert.equal(exported.version, 3);
+  assert.equal(exported.version, 4);
   assert.deepEqual(Object.keys(exported.settings).sort(), ['distribution_panels', 'plot_type', 'scatter_panels']);
   const loaded = decodeConfig(JSON.stringify(exported));
   assert.deepEqual(loaded.settings.distribution_panels, panels);
@@ -270,10 +270,10 @@ test('version 3 round-trips independent distributions and scatter settings toget
   assert.deepEqual(loaded.settings.distribution_panels[2].columns, ['temperature', 'humidity']);
 });
 
-test('current exports consistently use version 3 including legacy settings', () => {
-  assert.equal(CONFIG_VERSION, 3);
-  assert.equal(JSON.parse(encodeConfig({distribution_panels: [defaultDistributionPanel(schema)]})).version, 3);
-  assert.equal(JSON.parse(encodeConfig({plot_type: 'Trends', mlc_width: 3})).version, 3);
+test('current exports consistently use version 4 including legacy settings', () => {
+  assert.equal(CONFIG_VERSION, 4);
+  assert.equal(JSON.parse(encodeConfig({distribution_panels: [defaultDistributionPanel(schema)]})).version, 4);
+  assert.equal(JSON.parse(encodeConfig({plot_type: 'Trends', mlc_width: 3})).version, 4);
 });
 
 test('legacy distribution columns and bins migrate from versions 1 and 2 before defaults merge', () => {
@@ -411,23 +411,23 @@ test('all analysis views have independent defaults and shared comparison setting
     assert.notEqual(defaults[family.key][0], defaultSettings(schema)[family.key][0]);
   }
   assert.equal(defaultTrendPanel(schema, 1).title, 'Trends 2');
-  assert.deepEqual(defaultTrendPanel(schema, 1).columns, ['humidity']);
-  assert.deepEqual(defaultTrendPanel(schema, 5).columns, ['temperature']);
+  assert.deepEqual(defaultTrendPanel(schema, 1).subplots, [{columns: ['humidity']}]);
+  assert.deepEqual(defaultTrendPanel(schema, 5).subplots, [{columns: ['temperature']}]);
   assert.equal(defaultRollingPanel(schema, 1).title, 'Rolling window 2');
   assert.equal(defaultDerivativePanel(schema, 1).title, 'Derivatives 2');
   assert.equal(defaultRollingPanel(schema).rangeslider, true);
   assert.equal(defaultDerivativePanel(schema).rangeslider, true);
   assert.equal(defaultRollingPanel({columns: schema.columns.slice(0, 2)}).rangeslider, false);
-  defaults.trend_panels[0].columns.push('humidity');
+  defaults.trend_panels[0].subplots[0].columns.push('humidity');
   assert.deepEqual(defaults.mlc_cols_0, ['temperature']);
-  assert.deepEqual(defaultSettings(schema).trend_panels[0].columns, ['temperature']);
+  assert.deepEqual(defaultSettings(schema).trend_panels[0].subplots, [{columns: ['temperature']}]);
   assert.deepEqual(normalizeConfiguration(defaultSettings(schema), schema).warnings, []);
 });
 
-test('version 3 independently round-trips every view, comparison options, and bin scopes', () => {
+test('version 4 independently round-trips every view, comparison options, and bin scopes', () => {
   const settings = {
     plot_type: 'Derivatives', comparison_link_x: true, comparison_link_y: true, distribution_shared_bins: true,
-    trend_panels: [defaultTrendPanel(schema), {...defaultTrendPanel(schema, 1), title: 'Humidity history', columns: ['humidity', 'temperature'], shape: 'hv', width: 4, ytype: 'log', markers: true, rangeslider: false, unified: false, spikes: false}],
+    trend_panels: [defaultTrendPanel(schema), {...defaultTrendPanel(schema, 1), title: 'Humidity history', subplots: [{columns: ['humidity', 'temperature']}], shape: 'hv', width: 4, ytype: 'log', markers: true, rangeslider: false, unified: false, spikes: false}],
     rolling_panels: [defaultRollingPanel(schema), {...defaultRollingPanel(schema, 1), title: 'Trailing humidity', y: 'humidity', window: 100, includeCurrent: false, requireFull: true, band: false, unified: false, rangeslider: false, spikes: false, size: 10, opacity: .4}],
     derivative_panels: [defaultDerivativePanel(schema), {...defaultDerivativePanel(schema, 1), title: 'Humidity rate', y: 'humidity', timeUnit: 'minutes', xMode: 'use numeric index values', smoothWindow: 3, markers: false, width: 5, unified: false, rangeslider: false, spikes: false}],
     distribution_panels: [{...defaultDistributionPanel(schema), binScope: 'Full dataset', binCount: 120, binWidth: .25}],
@@ -435,15 +435,15 @@ test('version 3 independently round-trips every view, comparison options, and bi
   };
   const before = structuredClone(settings);
   const encoded = encodeConfig({...settings, activePanels: {Trends: 1}, raw_df: {private: true}});
-  assert.equal(JSON.parse(encoded).version, 3);
+  assert.equal(JSON.parse(encoded).version, 4);
   const loaded = decodeConfig(encoded);
   assert.deepEqual(loaded.settings, settings);
   assert.deepEqual(loaded.warnings, []);
-  loaded.settings.trend_panels[1].columns.push('other');
+  loaded.settings.trend_panels[1].subplots[0].columns.push('other');
   loaded.settings.rolling_panels[0].window = 20;
   loaded.settings.derivative_panels[0].smoothWindow = 5;
   assert.deepEqual(settings, before);
-  assert.deepEqual(loaded.settings.trend_panels[0].columns, ['temperature']);
+  assert.deepEqual(loaded.settings.trend_panels[0].subplots, [{columns: ['temperature']}]);
 });
 
 test('versions 1 and 2 migrate multiple trend subplots and all legacy analysis appearances', () => {
@@ -456,8 +456,8 @@ test('versions 1 and 2 migrate multiple trend subplots and all legacy analysis a
   for (const version of [1, 2]) {
     const loaded = decodeConfig(document(legacy, {version}));
     const merged = {...defaultSettings(schema), ...normalizeConfiguration(loaded.settings, schema).settings};
-    assert.equal(merged.trend_panels.length, 2);
-    assert.deepEqual(merged.trend_panels.map(panel => panel.columns), [['temperature'], ['humidity']]);
+    assert.equal(merged.trend_panels.length, 1);
+    assert.deepEqual(merged.trend_panels[0].subplots, [{columns: ['temperature']}, {columns: ['humidity']}]);
     for (const panel of merged.trend_panels) {
       assert.equal(panel.shape, 'spline'); assert.equal(panel.width, 4); assert.equal(panel.ytype, 'log');
       assert.equal(panel.markers, true); assert.equal(panel.rangeslider, false); assert.equal(panel.unified, false); assert.equal(panel.spikes, false);
@@ -483,18 +483,18 @@ test('partial legacy analysis settings migrate before defaults and obsolete poin
     assert.equal(merged[key][0][field], expected);
     assert.deepEqual(normalized.warnings, []);
     if (key !== 'trend_panels') assert.equal(merged[key][0].y, 'temperature');
-    else assert.deepEqual(merged[key][0].columns, ['temperature']);
+    else assert.deepEqual(merged[key][0].subplots, [{columns: ['temperature']}]);
   }
   const inferred = decodeConfig(document({mlc_cols_2: ['humidity']}));
-  assert.equal(inferred.settings.trend_panels.length, 3);
-  assert.deepEqual(inferred.settings.trend_panels[2].columns, ['humidity']);
+  assert.equal(inferred.settings.trend_panels.length, 1);
+  assert.deepEqual(inferred.settings.trend_panels[0].subplots, [{}, {}, {columns: ['humidity']}]);
   const ignoredCaps = decodeConfig(document({mlc_maxpts: 1000, rw_maxpts: 1000, der_maxpts: 1000}));
   for (const family of analysisFamilies) assert.equal(ignoredCaps.settings[family.key], undefined);
 });
 
 test('canonical analysis arrays take precedence over stale legacy subplot counts and styles', () => {
   const canonical = {
-    trend_panels: [{...defaultTrendPanel(schema), title: 'Kept trend', columns: ['humidity'], width: 3}],
+    trend_panels: [{...defaultTrendPanel(schema), title: 'Kept trend', subplots: [{columns: ['humidity']}], width: 3}],
     rolling_panels: [{...defaultRollingPanel(schema), window: 150}],
     derivative_panels: [{...defaultDerivativePanel(schema), timeUnit: 'days'}],
   };
@@ -509,11 +509,11 @@ test('runtime analysis helpers return independent panel and signal arrays', () =
     copy[0].title = 'Changed';
     assert.notEqual(state[family.key][0].title, 'Changed');
     if (family.key === 'trend_panels') {
-      copy[0].columns.push('humidity');
-      assert.deepEqual(state.trend_panels[0].columns, ['temperature']);
-      assert.deepEqual(copy[1].columns, ['humidity']);
+      copy[0].subplots[0].columns.push('humidity');
+      assert.deepEqual(state.trend_panels[0].subplots, [{columns: ['temperature']}]);
+      assert.deepEqual(copy[1].subplots, [{columns: ['humidity']}]);
       const legacy = {mlc_n_subplots: 1, mlc_cols_0: ['humidity']};
-      family.read(legacy, schema)[0].columns.push('temperature');
+      family.read(legacy, schema)[0].subplots[0].columns.push('temperature');
       assert.deepEqual(legacy.mlc_cols_0, ['humidity']);
     }
   }
@@ -521,14 +521,14 @@ test('runtime analysis helpers return independent panel and signal arrays', () =
 
 test('analysis normalization restores numeric signals and retains global filters', () => {
   const settings = {
-    trend_panels: [{...defaultTrendPanel(schema), columns: ['humidity', 'shift', 'gone']}, {...defaultTrendPanel(schema, 1), columns: ['time']}],
+    trend_panels: [{...defaultTrendPanel(schema), subplots: [{columns: ['humidity', 'shift', 'gone']}]}, {...defaultTrendPanel(schema, 1), subplots: [{columns: ['time']}]}],
     rolling_panels: [{...defaultRollingPanel(schema), y: 'shift'}, {...defaultRollingPanel(schema, 1), y: 'humidity'}],
     derivative_panels: [{...defaultDerivativePanel(schema), y: 'gone'}],
     flt2_n: 1, flt2_var_0: 'temperature', flt2_low_num_0: '20', comparison_link_x: true,
   };
   const before = structuredClone(settings);
   const result = normalizeConfiguration(settings, schema);
-  assert.deepEqual(result.settings.trend_panels.map(panel => panel.columns), [['humidity'], ['humidity']]);
+  assert.deepEqual(result.settings.trend_panels.map(panel => panel.subplots), [[{columns: ['humidity']}], [{columns: ['temperature']}]]);
   assert.deepEqual(result.settings.rolling_panels.map(panel => panel.y), ['temperature', 'humidity']);
   assert.equal(result.settings.derivative_panels[0].y, 'temperature');
   assert.equal(result.settings.comparison_link_x, true);
@@ -536,7 +536,7 @@ test('analysis normalization restores numeric signals and retains global filters
   assert.equal(result.warnings.length, 4);
   assert.deepEqual(settings, before);
   const empty = normalizeConfiguration({trend_panels: [{}], rolling_panels: [{}], derivative_panels: [{}]}, {columns: schema.columns.slice(2)});
-  assert.deepEqual(empty.settings.trend_panels[0].columns, []);
+  assert.deepEqual(empty.settings.trend_panels[0].subplots, [{columns: []}]);
   assert.equal(empty.settings.rolling_panels[0].y, ''); assert.equal(empty.settings.derivative_panels[0].y, '');
   assert.deepEqual(empty.warnings, []);
 });
@@ -616,4 +616,147 @@ test('shared distribution bins ignore invalid unused follower values while prese
   assert.equal(none.settings.scatter_panels[0].colorBinWidth, 1);
   assert.equal(none.settings.scatter_panels[0].markerBinCount, 5);
   assert.throws(() => encodeConfig({scatter_panels: [{color: 'temperature', colorBinMode: 'Bin width', colorBinWidth: 0}]}), /colorBinWidth/);
+});
+
+test('nested Trends preserve independent instances, multiple signals, cleared rows and shared appearance', () => {
+  const settings = {
+    plot_type: 'Trends', trend_panels: [
+      {...defaultTrendPanel(schema), title: 'Conditions', subplots: [{columns: ['temperature', 'humidity']}, {columns: []}, {columns: ['humidity']}], shape: 'spline', width: 5, ytype: 'log', markers: true, rangeslider: false, unified: false, spikes: false},
+      {...defaultTrendPanel(schema, 1), title: 'Other view', subplots: [{columns: ['temperature']}, {columns: ['temperature', 'humidity']}]},
+    ],
+    flt2_n: 1, flt2_var_0: 'temperature', flt2_low_num_0: '5', comparison_link_x: true,
+  };
+  const before = structuredClone(settings);
+  const encoded = encodeConfig({...settings, activeTrendSubplot: 2, dataset: {private: true}});
+  assert.equal(JSON.parse(encoded).version, 4);
+  const decoded = decodeConfig(encoded);
+  assert.deepEqual(decoded.settings, settings);
+  assert.deepEqual(normalizeConfiguration(decoded.settings, schema).settings, settings);
+  assert.deepEqual(decoded.warnings, []);
+  decoded.settings.trend_panels[0].subplots[0].columns.push('other');
+  decoded.settings.trend_panels[0].subplots[1].columns.push('humidity');
+  assert.deepEqual(settings, before);
+  assert.deepEqual(decoded.settings.trend_panels[1].subplots[0].columns, ['temperature']);
+});
+
+test('old flat canonical Trends migrate to one subplot per existing instance for versions 1 through 3', () => {
+  for (const version of [1, 2, 3]) {
+    const loaded = decodeConfig(document({
+      plot_type: 'Trends', mlc_n_subplots: 6, mlc_cols_0: ['humidity'],
+      trend_panels: [{title: 'First instance', columns: ['temperature', 'humidity'], width: 4}, {title: 'Cleared instance', columns: [], shape: 'hv'}],
+    }, {version}));
+    assert.equal(loaded.settings.trend_panels.length, 2);
+    assert.deepEqual(loaded.settings.trend_panels.map(panel => panel.subplots), [[{columns: ['temperature', 'humidity']}], [{columns: []}]]);
+    assert.equal(loaded.settings.trend_panels[0].title, 'First instance');
+    assert.equal(loaded.settings.trend_panels[0].width, 4);
+    assert.equal(loaded.settings.trend_panels[1].title, 'Cleared instance');
+    assert.equal(loaded.settings.trend_panels[1].shape, 'hv');
+    assert.equal(Object.hasOwn(loaded.settings.trend_panels[0], 'columns'), false);
+    assert.deepEqual(loaded.warnings, []);
+    assert.deepEqual(normalizeConfiguration(loaded.settings, schema).settings.trend_panels[1].subplots, [{columns: []}]);
+    assert.equal(JSON.parse(encodeConfig(loaded.settings)).version, 4);
+  }
+});
+
+test('legacy subplot counts restore one Trend and preserve empty rows before and after default merging', () => {
+  for (const version of [1, 2, 3]) {
+    const loaded = decodeConfig(document({plot_type: 'Trends', mlc_n_subplots: 3, mlc_cols_0: ['temperature', 'humidity'], mlc_cols_1: [], mlc_cols_2: ['humidity'], mlc_markers: true, mlc_width: 6}, {version}));
+    const merged = {...defaultSettings(schema), ...normalizeConfiguration(loaded.settings, schema).settings};
+    assert.equal(merged.trend_panels.length, 1);
+    assert.deepEqual(merged.trend_panels[0].subplots, [{columns: ['temperature', 'humidity']}, {columns: []}, {columns: ['humidity']}]);
+    assert.equal(merged.trend_panels[0].width, 6); assert.equal(merged.trend_panels[0].markers, true);
+    assert.deepEqual(decodeConfig(encodeConfig(merged)).settings.trend_panels, merged.trend_panels);
+  }
+});
+
+test('missing Trend selections stay absent through schema-free migration while explicit empty rows stay empty', () => {
+  for (const settings of [
+    {mlc_n_subplots: 2, mlc_cols_1: [], mlc_width: 5},
+    {trend_panels: [{width: 5, subplots: [{}, {columns: []}]}]},
+  ]) {
+    const loaded = decodeConfig(document(settings));
+    assert.deepEqual(loaded.settings.trend_panels[0].subplots, [{}, {columns: []}]);
+    const portable = decodeConfig(encodeConfig(loaded.settings));
+    assert.deepEqual(portable.settings.trend_panels[0].subplots, [{}, {columns: []}]);
+    const normalized = normalizeConfiguration(portable.settings, schema);
+    assert.deepEqual(normalized.settings.trend_panels[0].subplots, [{columns: ['temperature']}, {columns: []}]);
+    assert.equal(normalized.settings.trend_panels[0].width, 5);
+    assert.deepEqual(normalized.warnings, []);
+  }
+  const styleOnly = decodeConfig(document({mlc_shape: 'hvh'}));
+  assert.deepEqual(styleOnly.settings.trend_panels[0].subplots, [{}]);
+  assert.deepEqual(normalizeConfiguration(styleOnly.settings, schema).settings.trend_panels[0].subplots, [{columns: ['temperature']}]);
+});
+
+test('nested canonical rows win over stale flat columns and legacy subplot controls', () => {
+  const panel = {...defaultTrendPanel(schema), subplots: [{columns: ['humidity']}, {columns: []}]};
+  const loaded = decodeConfig(document({trend_panels: [{...panel, columns: 'unused old field'}], mlc_n_subplots: 6, mlc_cols_0: ['temperature']}, {version: 4}));
+  assert.deepEqual(loaded.settings.trend_panels, [panel]);
+  assert.deepEqual(loaded.warnings, []);
+  assert.deepEqual(trendSubplots({...panel, columns: ['temperature']}, schema), panel.subplots);
+});
+
+test('subplot helpers deep-copy nested arrays and resolve only missing selections', () => {
+  assert.equal(MAX_TREND_SUBPLOTS, 6);
+  assert.deepEqual(defaultTrendSubplot(schema), {columns: ['temperature']});
+  assert.deepEqual(defaultTrendSubplot(schema, 1), {columns: ['humidity']});
+  assert.deepEqual(defaultTrendSubplot(schema, 5), {columns: ['temperature']});
+  const panel = {...defaultTrendPanel(schema), subplots: [{columns: ['temperature', 'humidity']}, {columns: []}, {}]};
+  const before = structuredClone(panel), rows = trendSubplots(panel, schema);
+  assert.deepEqual(rows, [{columns: ['temperature', 'humidity']}, {columns: []}, {columns: ['temperature']}]);
+  rows[0].columns.push('other'); rows[1].columns.push('humidity');
+  assert.deepEqual(panel, before);
+  const copies = trendPanels({trend_panels: [panel, panel]}, schema);
+  copies[0].subplots[0].columns.push('changed');
+  assert.deepEqual(copies[1].subplots[0].columns, ['temperature', 'humidity']);
+  assert.deepEqual(panel, before);
+  const flat = {columns: ['humidity']};
+  trendSubplots(flat, schema)[0].columns.push('temperature');
+  assert.deepEqual(flat.columns, ['humidity']);
+  const legacy = {mlc_n_subplots: 2, mlc_cols_0: ['humidity'], mlc_cols_1: []};
+  const migrated = trendPanels(legacy, schema);
+  assert.equal(migrated.length, 1); assert.deepEqual(migrated[0].subplots, [{columns: ['humidity']}, {columns: []}]);
+  migrated[0].subplots[0].columns.push('temperature');
+  assert.deepEqual(legacy.mlc_cols_0, ['humidity']);
+});
+
+test('six Trend instances each accept six independent subplot rows without aliasing', () => {
+  const shared = {columns: ['temperature']};
+  const panels = Array.from({length: MAX_ANALYSIS_PANELS}, (_, index) => ({...defaultTrendPanel(schema, index), subplots: Array(MAX_TREND_SUBPLOTS).fill(shared)}));
+  const loaded = decodeConfig(encodeConfig({trend_panels: panels}));
+  assert.equal(loaded.settings.trend_panels.length, 6);
+  for (const panel of loaded.settings.trend_panels) assert.equal(panel.subplots.length, 6);
+  loaded.settings.trend_panels[0].subplots[0].columns.push('humidity');
+  assert.deepEqual(loaded.settings.trend_panels[0].subplots[1].columns, ['temperature']);
+  assert.deepEqual(loaded.settings.trend_panels[1].subplots[0].columns, ['temperature']);
+  assert.deepEqual(shared.columns, ['temperature']);
+});
+
+for (const subplots of [[], Array(MAX_TREND_SUBPLOTS + 1).fill({}), null, {}, ['row'], [null], [new Date(0)], [Object.create({columns: ['temperature']})]]) test(`reject invalid nested Trend subplot collection ${JSON.stringify(subplots).slice(0, 90)}`, () => {
+  assert.throws(() => validateSettings({trend_panels: [{subplots}]}), /trend_panels\[0\].subplots/);
+});
+
+for (const columns of ['temperature', null, [1], Array(2001).fill('temperature'), ['x'.repeat(10001)]]) test(`validate nested Trend signals ${JSON.stringify(columns).slice(0, 45)}`, () => {
+  assert.throws(() => validateSettings({trend_panels: [{subplots: [{columns}]}]}), /subplots\[0\].columns/);
+});
+
+test('nested Trend rows ignore private data, per-row styling, filters and prototype fields safely', () => {
+  const loaded = decodeConfig('{"app":"tsplotter","version":4,"settings":{"trend_panels":[{"subplots":[{"columns":["temperature"],"width":8,"filters":[1],"dataset":{"private":1},"__proto__":{"polluted":true}}]}]}}');
+  assert.deepEqual(loaded.settings.trend_panels[0].subplots, [{columns: ['temperature']}]);
+  assert.equal(loaded.warnings.length, 4);
+  assert.equal({}.polluted, undefined);
+  assert.equal(loaded.settings.trend_panels[0].width, 2);
+  assert.throws(() => decodeConfig('{"app":"tsplotter","version":4,"settings":{"trend_panels":[{"subplots":[{"columns":[],"columns":["temperature"]}]}]}}'), /Duplicate configuration field/);
+});
+
+test('nested schema normalization warns per row, recovers unavailable selections and preserves cleared rows', () => {
+  const settings = {trend_panels: [{...defaultTrendPanel(schema), subplots: [{columns: ['humidity', 'shift', 'gone']}, {columns: []}, {columns: ['time']}, {}]}]};
+  const before = structuredClone(settings);
+  const result = normalizeConfiguration(settings, schema);
+  assert.deepEqual(result.settings.trend_panels[0].subplots, [{columns: ['humidity']}, {columns: []}, {columns: ['temperature']}, {columns: ['temperature']}]);
+  assert.equal(result.warnings.length, 2);
+  assert.match(result.warnings[0], /subplot 1/); assert.match(result.warnings[1], /subplot 3/);
+  assert.deepEqual(settings, before);
+  const noNumeric = normalizeConfiguration(settings, {columns: schema.columns.slice(2)});
+  assert.deepEqual(noNumeric.settings.trend_panels[0].subplots, [{columns: []}, {columns: []}, {columns: []}, {columns: []}]);
 });
