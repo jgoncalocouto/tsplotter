@@ -66,7 +66,7 @@ try {
   await page.setInputFiles('#file-input', fixture);
   await page.waitForFunction(count => document.querySelector('#status')?.classList.contains('error') || Number((document.querySelector('#row-count')?.textContent || '').replace(/[^0-9]/g, '')) === count, rows);
   assert.ok(!await page.locator('#status').evaluate(el => el.classList.contains('error')), await page.locator('#status').textContent());
-  if (await page.locator('#x-column option[value="x"]').count()) await page.selectOption('#x-column', 'x');
+  if (await page.locator('#x-column option[value="x"]').count()) await chooseSignals(page, ['x'], '#x-column');
   await chooseSignals(page, ['signal']);
 
   assert.equal(await page.getByRole('tab').count(), 5);
@@ -116,7 +116,7 @@ try {
   // Filters, preview and exports must share the exact same complete row set.
   await page.locator('#filter-panel > summary').click();
   await page.click('#add-filter');
-  await page.selectOption('[data-key="flt2_var_0"]', 'x');
+  await chooseSignals(page, ['x'], '[data-key="flt2_var_0"]');
   await page.fill('[data-key="flt2_low_num_0"]', '100');
   await page.fill('[data-key="flt2_up_num_0"]', '199');
   await page.click('#render-button');
@@ -140,7 +140,7 @@ try {
   await rendered();
   assert.equal(Number((await page.locator('#row-count').textContent()).replaceAll(',', '')), rows);
   await page.click('#add-filter');
-  await page.selectOption('[data-key="flt2_var_0"]', 'x');
+  await chooseSignals(page, ['x'], '[data-key="flt2_var_0"]');
   await page.fill('[data-key="flt2_low_num_0"]', String(rows + 100));
   await page.click('#render-button');
   await page.waitForFunction(() => document.querySelector('#row-count')?.textContent === '0' && !document.querySelector('#render-button')?.disabled);
@@ -149,8 +149,8 @@ try {
   await rendered();
   pass('Zero-match filters clear stale charts and recover after clearing filters');
   await draw('Scatter');
-  await page.selectOption('[data-panel-key="color"]', 'aux');
-  await page.selectOption('[data-panel-key="marker"]', 'aux');
+  await chooseSignals(page, ['aux'], '[data-panel-key="color"]');
+  await chooseSignals(page, ['aux'], '[data-panel-key="marker"]');
   await page.selectOption('[data-panel-key="colorMode"]', 'discrete');
   await page.selectOption('[data-panel-key="colorBinMode"]', 'Number of bins');
   await page.fill('[data-panel-key="colorBinCount"]', '5');
@@ -168,7 +168,7 @@ try {
     await rendered();
     assert.equal(await page.locator('#preview-table tbody tr').count(), 0, 'New imports must clear stale previews');
     await page.waitForFunction(count => Number((document.querySelector('#row-count')?.textContent || '').replace(/[^0-9]/g, '')) === count, rows);
-    if (await page.locator('#x-column option[value="x"]').count()) await page.selectOption('#x-column', 'x');
+    if (await page.locator('#x-column option[value="x"]').count()) await chooseSignals(page, ['x'], '#x-column');
     await chooseSignals(page, ['signal']);
     await draw('Trends');
     assert.ok((await traces()).some(trace => trace.length === rows), 'Parquet retains every decoded row');
@@ -210,7 +210,7 @@ try {
   await page.setInputFiles('#file-input', { name: 'dmy.csv', mimeType: 'text/csv', buffer: Buffer.from(datetimeCSV) });
   await rendered();
   await page.selectOption('[data-key="setup_time_mode"]', 'Absolute time');
-  await page.selectOption('#x-column', 'date');
+  await chooseSignals(page, ['date'], '#x-column');
   await page.locator('[data-key="setup_profile"]').evaluate(el => el.closest('details').open = true);
   await page.selectOption('[data-key="setup_profile"]', 'DMY (dd/mm/yyyy)');
   await chooseSignals(page, 'signal');
@@ -224,7 +224,7 @@ try {
   assert.ok((await traces()).some(trace => trace.length === 3), 'All three valid timestamp rows are plotted');
   if (!await page.locator('#filter-panel').evaluate(el => el.open)) await page.locator('#filter-panel > summary').click();
   await page.click('#add-filter');
-  await page.selectOption('[data-key="flt2_var_0"]', '(time index)');
+  await chooseSignals(page, ['(time index)'], '[data-key="flt2_var_0"]');
   await page.fill('[data-date-bound="low"][data-filter-index="0"]', '2026-02-02T00:00:00');
   await page.fill('[data-date-bound="up"][data-filter-index="0"]', '2026-02-03T00:00:00');
   await page.click('#render-button');

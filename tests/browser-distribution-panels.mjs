@@ -47,6 +47,7 @@ async function update(target, count) {
   await ready(target, count);
 }
 async function selectField(target, key, value) {
+  if (await target.locator(`[data-panel-key="${key}"]`).evaluate(el => el.hasAttribute('data-variable'))) return chooseSignals(target, [value], `[data-panel-key="${key}"]`);
   await target.locator(`[data-panel-key="${key}"]`).selectOption(value);
 }
 async function fillField(target, key, value) {
@@ -235,7 +236,7 @@ try {
   await load(page, twoPanels, 2);
   if (!await page.locator('#filter-panel').evaluate(el => el.open)) await page.locator('#filter-panel > summary').click();
   await page.locator('#add-filter').click();
-  await page.selectOption('[data-key="flt2_var_0"]', 'x');
+  await chooseSignals(page, ['x'], '[data-key="flt2_var_0"]');
   await page.fill('[data-key="flt2_low_num_0"]', '100');
   await page.fill('[data-key="flt2_up_num_0"]', '199');
   await update(page, 2);

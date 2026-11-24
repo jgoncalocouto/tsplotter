@@ -42,6 +42,13 @@ Preview pagination is presentation only and must not affect analysis or exports.
 Every view uses the same Add/Duplicate/Remove panel lifecycle and selected editor.
 Panels keep independent settings and exports; filters remain global by design.
 
+Every variable selector provides case-insensitive search, including every Trend
+subplot, Distribution signal lists, Scatter axes/color/marker, Rolling/Derivative
+signals, the X/time axis and filter columns. Single-variable choices replace the
+previous value and close the popup; optional groups retain `(none)`. Search and
+no-match states never change selections. Preserve keyboard focus when dependent
+fields rerender, and close a mobile popup with Escape before closing its drawer.
+
 1. **Trends:** 1–6 independent instances, each with 1–6 stacked subplots and
    separate signal lists. Subplots share X zoom/pan and retain independent Y
    domains; the slider and X labels appear on the bottom row. Keep markers,

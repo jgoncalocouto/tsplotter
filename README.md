@@ -37,7 +37,7 @@ Open `http://localhost:8080/`. The container supports a `PORT` environment varia
 
 1. Open a local file, or choose **Explore example data**.
 2. Select an absolute time column and its parsing options, or use a relative axis with row numbers or another source column.
-3. Choose a view using the chart tabs: Trends, Distribution, Scatter, Rolling window or Derivatives. Search for signals in the selection controls; selected signals appear as removable chips.
+3. Choose a view using the chart tabs: Trends, Distribution, Scatter, Rolling window or Derivatives. Every variable selector is searchable, including Trend subplots, the X/time axis, Scatter axes and grouping, Rolling/Derivative signals and filter columns. Open a selector to type part of a variable name. Multiple selections appear as removable chips; single selections replace the previous variable and close the list. Optional grouping can be reset by choosing `(none)`.
 4. Add filters if needed, then select **Update chart**.
 5. Use Plotly's chart toolbar to zoom, pan or export an image. Download chart data or the full filtered dataset with the separate CSV actions.
 
@@ -105,6 +105,8 @@ npm run dev
 ```
 
 Run these commands from the repository root.
+
+`npm run test:variables` checks searchable variable selection across every chart view, axes and filters, including keyboard use, saved settings and the mobile settings drawer. It uses the same `BASE_URL` and `CHROMIUM_PATH` options as the other browser checks.
 
 `npm run build` prepares local DuckDB assets before creating `dist/`. For browser workflow checks, install Chromium once with `npx playwright install chromium`, keep the development server running at `http://127.0.0.1:5173/`, and run `npm run test:browser` in another terminal. Run `node tests/browser-scatter-panels.mjs`, `node tests/browser-distribution-panels.mjs` and `node tests/browser-workspace-consistency.mjs` for panel lifecycles, migrations, independent data tools, recovery, comparison options, row ledgers, exports and mobile layout. Set `BASE_URL` if using a different server URL; set `CHROMIUM_PATH` to use an existing Chromium executable. The configuration/file-format tests cover versions 1–4, unsafe or ambiguous JSON, filter adapters, real Excel workbooks and numeric HDF5 reads.
 

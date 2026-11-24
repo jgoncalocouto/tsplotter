@@ -1,4 +1,4 @@
-/** Accessible signal multiselects backed by the original, portable native selects. */
+/** Searchable variable pickers backed by the original, portable native selects. */
 const controllers = new Set();
 const bySelect = new WeakMap();
 const attachedDocuments = new WeakSet();
@@ -88,17 +88,19 @@ export function closePickers({restoreFocus = false} = {}) {
 function createPicker(select) {
   const document = select.ownerDocument;
   attachDocument(document);
-  const label = selectLabel(select);
+  const label = selectLabel(select), multiple = select.multiple;
   const token = `${select.id || 'signal'}-picker-${++nextId}`;
   const wrapper = element(document, 'div', 'signal-picker');
+  wrapper.dataset.pickerMode = multiple ? 'multiple' : 'single';
   const trigger = element(document, 'button', 'picker-trigger');
   trigger.type = 'button'; trigger.setAttribute('aria-haspopup', 'listbox'); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-controls', `${token}-list`);
   const popover = element(document, 'div', 'picker-popover'); popover.hidden = true;
   const search = element(document, 'input', 'picker-search');
-  search.type = 'search'; search.autocomplete = 'off'; search.placeholder = 'Search signals…'; search.setAttribute('aria-label', `Search ${label.toLocaleLowerCase()}`); search.setAttribute('aria-controls', `${token}-list`);
-  const list = element(document, 'div', 'picker-options'); list.id = `${token}-list`; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', label); list.setAttribute('aria-multiselectable', 'true');
+  search.type = 'search'; search.autocomplete = 'off'; search.placeholder = 'Search variables…'; search.setAttribute('aria-label', `Search ${label.toLocaleLowerCase()}`); search.setAttribute('aria-controls', `${token}-list`);
+  const list = element(document, 'div', 'picker-options'); list.id = `${token}-list`; list.setAttribute('role', 'listbox'); list.setAttribute('aria-label', label); list.setAttribute('aria-multiselectable', String(multiple));
   const empty = element(document, 'div', 'picker-empty', 'No matching signals'); empty.setAttribute('role', 'status'); empty.hidden = true;
   const footer = element(document, 'div', 'picker-footer');
+  footer.hidden = !multiple;
   const count = element(document, 'span', 'picker-count'); count.setAttribute('aria-live', 'polite');
   const clear = element(document, 'button', 'picker-clear', 'Clear selection'); clear.type = 'button';
   footer.append(count, clear); popover.append(search, list, empty, footer); wrapper.append(trigger, popover);
@@ -130,8 +132,12 @@ function createPicker(select) {
     trigger.replaceChildren();
     const summary = pickerSummary(controller.options);
     const chips = element(document, 'span', 'picker-values');
-    if (!summary.count) chips.append(element(document, 'span', 'picker-placeholder', 'Select signals…'));
-    for (const option of summary.chips) {
+    if (!summary.count) chips.append(element(document, 'span', 'picker-placeholder', 'Select variables…'));
+    if (!multiple && summary.count) {
+      const value = element(document, 'span', 'picker-single-value', summary.selected[0].label);
+      value.title = summary.selected[0].label; chips.append(value);
+    }
+    for (const option of multiple ? summary.chips : []) {
       const chip = element(document, 'span', 'picker-chip'); chip.title = option.label;
       chip.append(element(document, 'span', 'picker-chip-label', option.label));
       if (!option.disabled) {
@@ -139,14 +145,15 @@ function createPicker(select) {
       }
       chips.append(chip);
     }
-    if (summary.remaining) chips.append(element(document, 'span', 'picker-overflow', `+${summary.remaining}`));
+    if (multiple && summary.remaining) chips.append(element(document, 'span', 'picker-overflow', `+${summary.remaining}`));
     const caret = element(document, 'span', 'picker-caret', '⌄'); caret.setAttribute('aria-hidden', 'true');
     trigger.append(chips, caret);
-    trigger.setAttribute('aria-label', `${label}: ${summary.count ? `${summary.count} selected, ${summary.selected.map(option => option.label).join(', ')}` : 'no selection'}`);
+    trigger.setAttribute('aria-label', `${label}: ${summary.count ? `${multiple ? `${summary.count} selected, ` : ''}${summary.selected.map(option => option.label).join(', ')}` : 'no selection'}`);
     count.textContent = `${summary.count} selected`;
     clear.disabled = select.disabled || !summary.selected.some(option => !option.disabled);
   }
   function setSelection(index, value) {
+    if (!multiple) {value = true; close(true);}
     if (!updatePickerSelection(select, index, value, {notify: false})) return;
     sync(); // Update before the app's bubbling handler can replace this picker.
     dispatchChange(select);
@@ -165,7 +172,7 @@ function createPicker(select) {
         button.addEventListener('click', () => setSelection(option.index, !select.options[option.index]?.selected));
         button.addEventListener('focus', () => {controller.activeIndex = option.index;});
         button.addEventListener('keydown', event => {
-          if (event.key === 'Escape') {event.preventDefault(); close(true);}
+          if (event.key === 'Escape') {event.preventDefault(); event.stopPropagation(); close(true);}
           else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
             event.preventDefault();
             const matches = visible();
@@ -191,7 +198,7 @@ function createPicker(select) {
     controller.open = true; popover.hidden = false; trigger.setAttribute('aria-expanded', 'true');
     search.value = ''; renderMatches();
     if (focus === 'search') search.focus();
-    else focusOption(nextPickerOption(visible(), undefined, focus === 'last' ? -1 : 1));
+    else focusOption((!multiple ? visible().find(option => option.selected && !option.disabled)?.index : undefined) ?? nextPickerOption(visible(), undefined, focus === 'last' ? -1 : 1));
   }
   trigger.addEventListener('click', event => {
     const removal = event.target.closest?.('[data-picker-remove]');
@@ -199,10 +206,10 @@ function createPicker(select) {
     controller.open ? close(false) : open();
   });
   trigger.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {event.preventDefault(); close(true);}
+    if (event.key === 'Escape' && controller.open) {event.preventDefault(); event.stopPropagation(); close(true);}
     else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {event.preventDefault(); open(event.key === 'ArrowUp' ? 'last' : 'first');}
     else if (event.key === 'Enter' || event.key === ' ') {event.preventDefault(); controller.open ? close(false) : open();}
-    else if ((event.key === 'Backspace' || event.key === 'Delete') && !controller.open) {
+    else if (multiple && (event.key === 'Backspace' || event.key === 'Delete') && !controller.open) {
       event.preventDefault(); const last = controller.options.filter(option => option.selected && !option.disabled).at(-1); if (last) setSelection(last.index, false);
     } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault(); open(); search.value = event.key; renderMatches();
@@ -210,7 +217,7 @@ function createPicker(select) {
   });
   search.addEventListener('input', renderMatches);
   search.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {event.preventDefault(); close(true);}
+    if (event.key === 'Escape') {event.preventDefault(); event.stopPropagation(); close(true);}
     else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {event.preventDefault(); focusOption(nextPickerOption(visible(), undefined, event.key === 'ArrowUp' ? -1 : 1));}
     else if (event.key === 'Enter') {event.preventDefault(); const index = nextPickerOption(visible(), undefined, 1); if (index !== undefined) setSelection(index, !select.options[index]?.selected);}
   });
@@ -227,7 +234,7 @@ function createPicker(select) {
 /** Safe to call after every view/configuration/dataset render; existing controls are synchronized once. */
 export function enhancePickers(root = document) {
   cleanupDetached();
-  const selector = 'select[data-key][multiple],select[data-panel-key][multiple],select[data-trend-subplot][multiple]';
+  const selector = 'select[data-variable],select[data-key][multiple],select[data-panel-key][multiple],select[data-trend-subplot][multiple]';
   const selects = [...root.querySelectorAll(selector)];
   if (root.matches?.(selector)) selects.unshift(root);
   return selects.map(select => {

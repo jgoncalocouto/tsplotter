@@ -91,3 +91,39 @@ test('actual browser picker keeps native selection, keyboard, search and busy-st
     assert.equal(await page.locator('.signal-picker [data-key]').count(), 0);
   } finally {await browser.close();}
 });
+
+test('searchable single-variable pickers replace choices, close on selection and preserve optional none', {skip: process.env.PICKER_DOM_TESTS !== '1'}, async () => {
+  const [{chromium}, {readFile}] = await Promise.all([import('@playwright/test'), import('node:fs/promises')]);
+  const source = await readFile(new URL('../src/pickers.js', import.meta.url), 'utf8');
+  const browser = await chromium.launch({headless: true, ...(process.env.CHROMIUM_PATH ? {executablePath: process.env.CHROMIUM_PATH} : {}), args: ['--no-sandbox']});
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<style>.native-control{display:none}[hidden]{display:none!important}</style><label>Color by<select id="color" data-variable><option value="(none)">(none)</option><option value="a">Alpha</option><option value="b">Beta</option><option disabled value="d">Disabled</option></select></label><label>Scale<select id="scale"><option>linear</option><option>log</option></select></label>');
+    await page.evaluate(async base64 => {
+      window.pickerModule = await import(`data:text/javascript;base64,${base64}`);
+      window.changes = 0; window.escapes = 0;
+      document.querySelector('#color').addEventListener('change', () => window.changes++);
+      document.addEventListener('keydown', event => {if (event.key === 'Escape') window.escapes++;});
+      window.pickerModule.enhancePickers();
+    }, Buffer.from(source, 'utf8').toString('base64'));
+    assert.equal(await page.locator('.signal-picker').count(), 1); assert.ok(await page.locator('#scale').isVisible());
+    assert.equal(await page.locator('[role="listbox"]').getAttribute('aria-multiselectable'), 'false');
+    assert.equal(await page.locator('.picker-chip-remove').count(), 0); assert.ok(!await page.locator('.picker-clear').isVisible());
+    await page.locator('.picker-trigger').click(); assert.ok(await page.locator('.picker-search').evaluate(el => el === document.activeElement));
+    await page.locator('.picker-search').fill('beta'); await page.locator('.picker-search').press('Enter');
+    assert.equal(await page.locator('#color').inputValue(), 'b'); assert.equal(await page.evaluate(() => window.changes), 1);
+    assert.equal(await page.locator('.picker-trigger').getAttribute('aria-expanded'), 'false'); assert.ok(await page.locator('.picker-trigger').evaluate(el => el === document.activeElement));
+    await page.locator('.picker-trigger').click(); await page.locator('.picker-search').fill('beta'); await page.locator('.picker-search').press('Enter');
+    assert.equal(await page.evaluate(() => window.changes), 1); assert.equal(await page.locator('#color').inputValue(), 'b');
+    await page.locator('.picker-trigger').press('Backspace'); assert.equal(await page.locator('#color').inputValue(), 'b');
+    await page.locator('.picker-trigger').press('n'); await page.locator('.picker-search').fill('none'); await page.getByRole('option', {name: '(none)', exact: true}).click();
+    assert.equal(await page.locator('#color').inputValue(), '(none)'); assert.equal(await page.evaluate(() => window.changes), 2);
+    await page.locator('.picker-trigger').click(); await page.locator('.picker-search').press('Escape'); assert.equal(await page.evaluate(() => window.escapes), 0);
+    await page.locator('.picker-trigger').press('Escape'); assert.equal(await page.evaluate(() => window.escapes), 1);
+    await page.locator('.picker-trigger').click(); await page.locator('.picker-search').fill('missing'); assert.ok(await page.locator('.picker-empty').isVisible());
+    assert.equal(await page.locator('#color').inputValue(), '(none)');
+    await page.evaluate(() => {document.querySelector('#color').disabled = true;});
+    await page.waitForFunction(() => document.querySelector('.picker-trigger').disabled);
+    assert.equal(await page.locator('.picker-trigger').getAttribute('aria-expanded'), 'false');
+  } finally {await browser.close();}
+});

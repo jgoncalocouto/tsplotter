@@ -158,7 +158,7 @@ function setSidebar(open,{focus=true}={}){
 const names=()=>schema?.columns.map(c=>c.name)??[];
 const nums=()=>schema?.columns.filter(c=>c.kind==='numeric').map(c=>c.name)??[];
 function options(items,value,multiple=false){return items.map(item=>{const [v,label]=Array.isArray(item)?item:[item,item];return `<option value="${esc(v)}" ${(multiple?Array.isArray(value)&&value.includes(v):String(v)===String(value))?'selected':''}>${esc(label)}</option>`;}).join('');}
-function select(label,key,items,{multiple=false,id='',className=''}={}){return `<label class="field ${className}">${esc(label)}<select ${id?`id="${id}"`:''} data-key="${key}" ${multiple?'multiple':''}>${options(items,state[key],multiple)}</select></label>`;}
+function select(label,key,items,{multiple=false,id='',className='',variable=false}={}){return `<label class="field ${className}">${esc(label)}<select ${id?`id="${id}"`:''} data-key="${key}" ${variable?'data-variable':''} ${multiple?'multiple':''}>${options(items,state[key],multiple)}</select></label>`;}
 function input(label,key,{type='number',min='',max='',step='any',id=''}={}){return `<label class="field">${esc(label)}<input ${id?`id="${id}"`:''} data-key="${key}" type="${type}" value="${esc(state[key]??'')}" ${min!==''?`min="${min}"`:''} ${max!==''?`max="${max}"`:''} ${type==='number'?`step="${step}"`:''}></label>`;}
 function check(label,key,{id=''}={}){return `<label class="check"><input ${id?`id="${id}"`:''} data-key="${key}" type="checkbox" ${state[key]?'checked':''}>${esc(label)}</label>`;}
 function currentPanels(){
@@ -168,9 +168,9 @@ function currentPanels(){
  activePanels[state.plot_type]=Math.max(0,Math.min(activePanelIndex(),state[view.key].length-1));
  return state[view.key];
 }
-function panelSelect(label,key,items,{id='',multiple=false,className=''}={}){
+function panelSelect(label,key,items,{id='',multiple=false,className='',variable=false}={}){
  const panel=currentPanels()[activePanelIndex()];
- return `<label class="field ${className}">${esc(label)}<select ${id?`id="${id}"`:''} data-panel-key="${key}" ${multiple?'multiple':''}>${options(items,panel[key],multiple)}</select></label>`;
+ return `<label class="field ${className}">${esc(label)}<select ${id?`id="${id}"`:''} data-panel-key="${key}" ${variable?'data-variable':''} ${multiple?'multiple':''}>${options(items,panel[key],multiple)}</select></label>`;
 }
 function panelInput(label,key,{type='number',min='',max='',step='any',maxLength=''}={}){
  const panel=currentPanels()[activePanelIndex()];
@@ -246,10 +246,11 @@ function renderAxis(){
  advanced+=select('Display timezone','setup_out_tz',['(keep)',...TIMEZONES,'Custom...']);
  if(state.setup_out_tz==='Custom...')advanced+=input('Display timezone name','setup_target_tz',{type:'text'});
  }
- $('#axis-controls').innerHTML=select('Time mode','setup_time_mode',['Absolute time','Relative time'])+select(absolute?'Time column':'X-axis column',absolute?'setup_dt_col':'setup_index',absolute?all:[['(row number 0..N-1)','Row number (0…N−1)'],...all],{id:'x-column'})+(advanced?`<details id="time-options" class="time-options" ${wasOpen?'open':''}><summary>Time parsing & timezone</summary><div class="details-body">${advanced}</div></details>`:'');
+ $('#axis-controls').innerHTML=select('Time mode','setup_time_mode',['Absolute time','Relative time'])+select(absolute?'Time column':'X-axis column',absolute?'setup_dt_col':'setup_index',absolute?all:[['(row number 0..N-1)','Row number (0…N−1)'],...all],{id:'x-column',variable:true})+(advanced?`<details id="time-options" class="time-options" ${wasOpen?'open':''}><summary>Time parsing & timezone</summary><div class="details-body">${advanced}</div></details>`:'');
+ enhancePickers($('#axis-controls'));
 }
 
-function renderOptions(){const focusedPanelKey=document.activeElement?.dataset.panelKey;const mode=state.plot_type,numeric=nums(),all=names(),none=['(none)',...all];let main='',appearance='';
+function renderOptions(){const active=document.activeElement,focusedPanelKey=active?.dataset.panelKey??active?.closest('.signal-picker')?.previousElementSibling?.dataset.panelKey;const mode=state.plot_type,numeric=nums(),all=names(),none=['(none)',...all];let main='',appearance='';
  if(mode==='Trends'){
   main=panelInput('Trend title','title',{type:'text',maxLength:80})+trendSubplotEditor();
   appearance=panelSelect('Line shape','shape',['linear','spline','hv','vh','hvh','vhv'])+panelInput('Line width','width',{min:1,max:8,step:1})+panelSelect('Y-axis scale','ytype',['linear','log'])
@@ -268,8 +269,8 @@ function renderOptions(){const focusedPanelKey=document.activeElement?.dataset.p
  }
  if(mode==='Scatter'){
   const panel=currentPanels()[activePanelIndex()];
-  main=panelInput('Scatter title','title',{type:'text',maxLength:80})+panelSelect('X variable','x',all,{id:'scatter-x'})+panelSelect('Y variable','y',all,{id:'y-columns'})
-   +panelSelect('Color by','color',none)+panelBinOptions('color','Color')+panelSelect('Marker by','marker',none)+panelBinOptions('marker','Marker');
+  main=panelInput('Scatter title','title',{type:'text',maxLength:80})+panelSelect('X variable','x',all,{id:'scatter-x',variable:true})+panelSelect('Y variable','y',all,{id:'y-columns',variable:true})
+   +panelSelect('Color by','color',none,{variable:true})+panelBinOptions('color','Color')+panelSelect('Marker by','marker',none,{variable:true})+panelBinOptions('marker','Marker');
   if(nums().includes(panel.color)&&panel.colorBinMode==='Individual values')main+=panelSelect('Color display','colorMode',[['auto','Automatic (numeric scale)'],['continuous','Continuous scale'],['discrete','Distinct groups']]);
   appearance=panelInput('Marker size','size',{min:3,max:20,step:1})+panelInput('Opacity','opacity',{min:.2,max:1,step:.05});
   if(panel.color!=='(none)')appearance+=numeric.includes(panel.color)&&panel.colorBinMode==='Individual values'&&panel.colorMode!=='discrete'
@@ -278,17 +279,18 @@ function renderOptions(){const focusedPanelKey=document.activeElement?.dataset.p
  }
 
  if(mode==='Rolling window'){
-  main=panelInput('Analysis title','title',{type:'text',maxLength:80})+panelSelect('Signal','y',numeric,{id:'y-columns'})+panelInput('Window size (rows)','window',{min:2,max:200000,step:1})
+  main=panelInput('Analysis title','title',{type:'text',maxLength:80})+panelSelect('Signal','y',numeric,{id:'y-columns',variable:true})+panelInput('Window size (rows)','window',{min:2,max:200000,step:1})
    +panelCheck('Include current row','includeCurrent')+panelCheck('Require full window','requireFull');
   appearance=panelCheck('Shade min/max band','band')+panelCheck('Unified hover','unified')+panelCheck('Range slider','rangeslider')+panelCheck('Spike lines','spikes')+panelInput('Marker size','size',{min:3,max:16,step:1})+panelInput('Marker opacity','opacity',{min:.2,max:1,step:.05});
  }
  if(mode==='Derivatives'){
-  main=panelInput('Analysis title','title',{type:'text',maxLength:80})+panelSelect('Signal','y',numeric,{id:'y-columns'})+panelSelect('Time unit','timeUnit',['seconds','minutes','hours','days','none (sample index)'])
+  main=panelInput('Analysis title','title',{type:'text',maxLength:80})+panelSelect('Signal','y',numeric,{id:'y-columns',variable:true})+panelSelect('Time unit','timeUnit',['seconds','minutes','hours','days','none (sample index)'])
    +panelSelect('Relative X spacing','xMode',['index step (1)','use numeric index values'])+panelInput('Derivative smoothing window','smoothWindow',{min:1,max:9999,step:1});
   appearance=panelCheck('Show markers','markers')+panelInput('Line width','width',{min:1,max:8,step:1})+panelCheck('Unified hover','unified')+panelCheck('Range slider','rangeslider')+panelCheck('Spike lines','spikes');
  }
- $('#chart-options').innerHTML=main;$('#chart-options').className=mode==='Trends'?'options trend-layout':'options';$('#appearance-options').innerHTML=appearance;$('#appearance-panel').classList.toggle('hidden',!appearance);renderPanelToolbar();refreshView();enhancePickers($('#chart-options'));if(focusedPanelKey){const field=$(`[data-panel-key="${focusedPanelKey}"]`);if(field&&!field.multiple)field.focus({preventScroll:true});}}
+ $('#chart-options').innerHTML=main;$('#chart-options').className=mode==='Trends'?'options trend-layout':'options';$('#appearance-options').innerHTML=appearance;$('#appearance-panel').classList.toggle('hidden',!appearance);renderPanelToolbar();refreshView();enhancePickers($('#chart-options'));if(focusedPanelKey){const field=$(`[data-panel-key="${focusedPanelKey}"]`);if(field&&!field.multiple)(field.nextElementSibling?.querySelector('.picker-trigger')??field).focus({preventScroll:true});}}
 function renderFilters() {
+  const active=document.activeElement,focusedKey=active?.dataset.key??active?.closest('.signal-picker')?.previousElementSibling?.dataset.key;
   const timeColumn = schema?.timeIndex || (state.setup_time_mode === 'Absolute time' && names().includes(state.setup_dt_col) ? state.setup_dt_col : undefined);
   const filterOptions = timeColumn ? [['(time index)', `Time index · ${timeColumn}`], ...names()] : names();
   $('#filters').innerHTML = Array.from({length: Number(state.flt2_n) || 0}, (_, i) => {
@@ -315,8 +317,10 @@ function renderFilters() {
         fields += `<label class="field">Value(s), comma separated<input data-key="flt2_vals_csv_${i}" data-membership-filter="${i}" data-original-value="${esc(value)}" type="text" value="${esc(value)}"></label>`;
       } else fields += input('Pattern', `flt2_patt_${i}`, {type: 'text'});
     }
-    return `<div class="filter-row" data-filter="${i}">${select('Combine', `flt2_logic_${i}`, ['AND', 'OR'])}${select('Column', `flt2_var_${i}`, filterOptions)}${fields}<button data-remove-filter="${i}" title="Remove filter" aria-label="Remove filter ${i + 1}">×</button>${kind !== 'numeric' && kind !== 'datetime' ? check('Case sensitive', `flt2_case_${i}`) + check('Include missing', `flt2_na_${i}`) : ''}</div>`;
+    return `<div class="filter-row" data-filter="${i}">${select('Combine', `flt2_logic_${i}`, ['AND', 'OR'])}${select('Column', `flt2_var_${i}`, filterOptions,{variable:true})}${fields}<button data-remove-filter="${i}" title="Remove filter" aria-label="Remove filter ${i + 1}">×</button>${kind !== 'numeric' && kind !== 'datetime' ? check('Case sensitive', `flt2_case_${i}`) + check('Include missing', `flt2_na_${i}`) : ''}</div>`;
   }).join('');
+  enhancePickers($('#filters'));
+  if(focusedKey?.startsWith('flt2_')){const field=$(`[data-key="${focusedKey}"]`);(field?.nextElementSibling?.querySelector('.picker-trigger')??field)?.focus({preventScroll:true});}
 }
 function xColumn(){return state.setup_time_mode==='Absolute time'?state.setup_dt_col:state.setup_index==='(row number 0..N-1)'?'__row__':state.setup_index;}
 function analysisOptions(){

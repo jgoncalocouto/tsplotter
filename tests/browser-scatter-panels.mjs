@@ -5,6 +5,7 @@ import {mkdtemp, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import * as XLSX from 'xlsx';
+import {chooseSignals} from './browser-controls.mjs';
 
 const baseURL = process.env.BASE_URL || 'http://127.0.0.1:5173/';
 const rowCount = Number(process.env.TEST_ROWS || 2401);
@@ -55,6 +56,7 @@ async function reveal(field) {
 }
 async function selectPanelField(target, key, value) {
   const field = target.locator(`[data-panel-key="${key}"]`);
+  if (await field.evaluate(el => el.hasAttribute('data-variable'))) return chooseSignals(target, [value], `[data-panel-key="${key}"]`);
   await reveal(field);
   await field.selectOption(value);
 }
@@ -274,7 +276,7 @@ try {
   await load(page, twoPanels, 2);
   if (!await page.locator('#filter-panel').evaluate(el => el.open)) await page.locator('#filter-panel > summary').click();
   await page.locator('#add-filter').click();
-  await page.selectOption('[data-key="flt2_var_0"]', 'x');
+  await chooseSignals(page, ['x'], '[data-key="flt2_var_0"]');
   await page.fill('[data-key="flt2_low_num_0"]', '100');
   await page.fill('[data-key="flt2_up_num_0"]', '199');
   await update(page, 2);

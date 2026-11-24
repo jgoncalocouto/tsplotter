@@ -26,7 +26,7 @@ test('time-index bound controls write idx settings while datetime columns write 
 test('filter renderer exposes saved time-index datetime bound controls', () => {
   const target = {innerHTML: ''};
   const state = {setup_time_mode: 'Absolute time', setup_dt_col: 'time', flt2_n: 1, flt2_var_0: '(time index)', flt2_use_lowdt_idx_0: true, flt2_low_date_idx_0: '2025-01-31', flt2_low_time_idx_0: '12:34:56.123456'};
-  const context = {state, schema: {columns: [{name: 'time', kind: 'datetime'}]}, names: () => ['time'], $: () => target, esc: value => String(value), select: (label, key, options) => JSON.stringify({label, key, options}), input: () => '', check: () => ''};
+  const context = {state, schema: {columns: [{name: 'time', kind: 'datetime'}]}, names: () => ['time'], $: () => target, document: {activeElement: null}, enhancePickers: () => [], esc: value => String(value), select: (label, key, options) => JSON.stringify({label, key, options}), input: () => '', check: () => ''};
   vm.runInNewContext(`${renderFilters}; renderFilters();`, context);
   assert.match(target.innerHTML, /Time index · time/); assert.match(target.innerHTML, /data-date-suffix="idx"/); assert.match(target.innerHTML, /2025-01-31T12:34:56.123456/); assert.doesNotMatch(target.innerHTML, /Value\(s\)/);
 });

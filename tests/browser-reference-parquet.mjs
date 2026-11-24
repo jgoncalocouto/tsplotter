@@ -145,6 +145,7 @@ async function update(name, panels = 1) {
 }
 async function panelField(key, value) {
   const field = page.locator(`[data-panel-key="${key}"]`);
+  if (await field.evaluate(element => element.hasAttribute('data-variable'))) return chooseSignals(page, [value], `[data-panel-key="${key}"]`);
   if (!await field.isVisible()) {
     const details = field.locator('xpath=ancestor::details[1]');
     if (!await details.evaluate(element => element.open)) await details.locator('summary').first().click();
@@ -282,7 +283,7 @@ async function loadConfig(config) {
 }
 async function setTimeFilter() {
   await openDetails('#filter-panel'); await page.locator('#add-filter').click();
-  await page.selectOption('[data-key="flt2_var_0"]', '(time index)');
+  await chooseSignals(page, ['(time index)'], '[data-key="flt2_var_0"]');
   await page.fill('[data-date-bound="low"][data-filter-index="0"]', localDateTime(profile.time.filterLow));
   await page.fill('[data-date-bound="up"][data-filter-index="0"]', localDateTime(profile.time.filterHigh));
   assert.ok(await page.locator('[data-date-bound="low"][data-filter-index="0"]').inputValue());
@@ -533,14 +534,14 @@ async function runFullWorkflow() {
     const b = (profile.filteredStatistics || filteredCSVStatistics).find(item => item.column === second);
     const low = (a.min + a.max) / 2, high = (b.min + b.max) / 2;
     const expected = boundedSamples.filter(row => Number.isFinite(row[signal]) && row[signal] >= low || Number.isFinite(row[second]) && row[second] <= high).length;
-    await openDetails('#filter-panel'); await page.selectOption('[data-key="flt2_var_0"]', signal);
+    await openDetails('#filter-panel'); await chooseSignals(page, [signal], '[data-key="flt2_var_0"]');
     await page.fill('[data-key="flt2_low_num_0"]', String(low)); await page.fill('[data-key="flt2_up_num_0"]', '');
-    await page.locator('#add-filter').click(); await page.selectOption('[data-key="flt2_var_1"]', second); await page.selectOption('[data-key="flt2_logic_1"]', 'OR');
+    await page.locator('#add-filter').click(); await chooseSignals(page, [second], '[data-key="flt2_var_1"]'); await page.selectOption('[data-key="flt2_logic_1"]', 'OR');
     await page.fill('[data-key="flt2_low_num_1"]', ''); await page.fill('[data-key="flt2_up_num_1"]', String(high));
-    await page.locator('#add-filter').click(); await page.selectOption('[data-key="flt2_var_2"]', '(time index)'); await page.selectOption('[data-key="flt2_logic_2"]', 'AND');
+    await page.locator('#add-filter').click(); await chooseSignals(page, ['(time index)'], '[data-key="flt2_var_2"]'); await page.selectOption('[data-key="flt2_logic_2"]', 'AND');
     await page.fill('[data-date-bound="low"][data-filter-index="2"]', localDateTime(profile.time.filterLow));
     await page.fill('[data-date-bound="up"][data-filter-index="2"]', localDateTime(profile.time.filterHigh));
-    await page.locator('#add-filter').click(); await page.selectOption('[data-key="flt2_var_3"]', constant);
+    await page.locator('#add-filter').click(); await chooseSignals(page, [constant], '[data-key="flt2_var_3"]');
     await page.fill('[data-key="flt2_low_num_3"]', String(statsByColumn.get(constant).min));
     await page.fill('[data-key="flt2_up_num_3"]', String(statsByColumn.get(constant).min));
     await update('Trends', 2);

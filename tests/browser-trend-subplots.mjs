@@ -48,7 +48,7 @@ async function checkbox(selector,value){const el=page.locator(selector);await re
 
 try{
  await page.goto(baseURL,{waitUntil:'networkidle'});await page.setInputFiles('#file-input',file);await ready();
- await page.selectOption('[data-key="setup_time_mode"]','Relative time');await page.selectOption('#x-column','x');
+ await page.selectOption('[data-key="setup_time_mode"]','Relative time');await chooseSignals(page, ['x'], '#x-column');
  await subplot(0,['a','b']);await page.locator('#add-trend-subplot').click();await subplot(1,['c']);await update();
  let s=await retained();assert.deepEqual(s.traces.map(t=>[t.name,t.row,t.xaxis,t.yaxis]),[['a',0,'x','y'],['b',0,'x','y'],['c',1,'x2','y2']]);
  assert.ok(s.ranges.yaxis[1]>s.ranges.yaxis2[1]);

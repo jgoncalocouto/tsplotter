@@ -28,7 +28,7 @@ try {
   await page.setInputFiles('#file-input', { name: 'dmy.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
   await ready();
   await page.selectOption('[data-key="setup_time_mode"]', 'Absolute time');
-  await page.selectOption('#x-column', 'date');
+  await chooseSignals(page, ['date'], '#x-column');
   await page.locator('[data-key="setup_profile"]').evaluate(el => el.closest('details').open = true);
   await page.selectOption('[data-key="setup_profile"]', 'DMY (dd/mm/yyyy)');
   await chooseSignals(page, 'signal');
@@ -43,7 +43,7 @@ try {
 
   await page.locator('#filter-panel > summary').click();
   await page.click('#add-filter');
-  await page.selectOption('[data-key="flt2_var_0"]', '(time index)');
+  await chooseSignals(page, ['(time index)'], '[data-key="flt2_var_0"]');
   await page.fill('[data-date-bound="low"][data-filter-index="0"]', '2026-02-02T00:00:00');
   await page.fill('[data-date-bound="up"][data-filter-index="0"]', '2026-02-03T00:00:00');
   await update();

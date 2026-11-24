@@ -66,6 +66,7 @@ async function update(target, name, count = 1) {
 }
 async function field(target, key, value) {
   const element = target.locator(`[data-panel-key="${key}"]`);
+  if (await element.evaluate(el => el.hasAttribute('data-variable'))) return chooseSignals(target, [value], `[data-panel-key="${key}"]`);
   if (!await element.isVisible()) {
     const details = element.locator('xpath=ancestor::details[1]');
     if (!await details.evaluate(el => el.open)) await details.locator('summary').first().click();
@@ -120,7 +121,7 @@ function csvTable(text) {
 async function filterRange(target, low, high) {
   if (!await target.locator('#filter-panel').evaluate(el => el.open)) await target.locator('#filter-panel > summary').click();
   if (!await target.locator('[data-key="flt2_var_0"]').count()) await target.locator('#add-filter').click();
-  await target.selectOption('[data-key="flt2_var_0"]', 'x');
+  await chooseSignals(target, ['x'], '[data-key="flt2_var_0"]');
   await target.fill('[data-key="flt2_low_num_0"]', String(low));
   await target.fill('[data-key="flt2_up_num_0"]', String(high));
 }
@@ -311,7 +312,7 @@ try {
   await ready(ledgerPage, 'Trends');
   await mode(ledgerPage, 'Scatter'); await field(ledgerPage, 'x', 'x'); await field(ledgerPage, 'y', 'signal');
   await ledgerPage.selectOption('[data-key="setup_time_mode"]', 'Absolute time');
-  await ledgerPage.selectOption('#x-column', 'time');
+  await chooseSignals(ledgerPage, ['time'], '#x-column');
   await filterRange(ledgerPage, 1, 6); await update(ledgerPage, 'Scatter');
   assert.equal(await ledgerPage.locator('#row-count').textContent(), '6');
   const ledger = await ledgerPage.locator('[data-scatter-card="0"] [data-row-ledger]').evaluate(el => JSON.parse(el.dataset.ledger));

@@ -19,14 +19,17 @@ export async function chooseChart(page, mode) {
 export async function chooseSignals(page, values, selector = '#y-columns') {
   const wanted = Array.isArray(values) ? values : [values];
   const select = page.locator(selector);
-  if (!await select.evaluate(el => el.multiple)) {
+  const multiple = await select.evaluate(el => el.multiple);
+  if (!multiple) {
     assert.equal(wanted.length, 1, 'Single signal selectors accept one choice');
-    await select.selectOption(wanted[0]);
-    return;
+    if (!await select.evaluate(el => el.hasAttribute('data-variable'))) {
+      await select.selectOption(wanted[0]);
+      return;
+    }
   }
   const picker = select.locator('xpath=following-sibling::div[contains(concat(" ", @class, " "), " signal-picker ")][1]');
   await picker.locator('.picker-trigger').click();
-  if (await picker.locator('.picker-clear').isEnabled()) await picker.locator('.picker-clear').click();
+  if (multiple && await picker.locator('.picker-clear').isEnabled()) await picker.locator('.picker-clear').click();
   for (const value of wanted) {
     const label = await select.locator('option').evaluateAll((options, target) => options.find(option => option.value === target)?.label, value);
     assert.ok(label !== undefined, `Signal ${value} must exist`);
@@ -34,7 +37,7 @@ export async function chooseSignals(page, values, selector = '#y-columns') {
     const option = picker.getByRole('option', { name: label, exact: true });
     if (await option.getAttribute('aria-selected') !== 'true') await option.click();
   }
-  await page.keyboard.press('Escape');
+  if (await picker.locator('.picker-trigger').getAttribute('aria-expanded') === 'true') await page.keyboard.press('Escape');
   assert.equal(await picker.locator('.picker-trigger').getAttribute('aria-expanded'), 'false');
   assert.deepEqual(await select.evaluate(el => [...el.selectedOptions].map(option => option.value)),
     await select.locator('option').evaluateAll((options, selected) => options.filter(option => selected.includes(option.value)).map(option => option.value), wanted));
